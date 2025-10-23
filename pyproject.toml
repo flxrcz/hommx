@@ -51,6 +51,7 @@ mkdocstrings-python = ">=1.18.0"
 [tool.pixi.environments]
 dev = { features = ["dev", "test"], solve-group = "default" }
 docs = { features = ["dev", "docs"], solve-group = "default" }
+test = { features = ["test"], solve-group = "default" }
 all = { features = [
   "dev",
   "docs",
