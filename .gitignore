@@ -8,3 +8,7 @@ __pycache__/
 
 # testing
 .coverage
+
+# caches
+.pytest_cache
+.ruff_cache
