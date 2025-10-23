@@ -33,7 +33,7 @@ jobs:
         run: pixi install -e docs
       - name: Build MkDocs documentation
         id: build-docs
-        run: pixi run -e docs build-docs
+        run: pixi run -e docs mkdocs build
       - name: Upload static files as artifact
         id: upload_artifact
         uses: actions/upload-pages-artifact@v3
