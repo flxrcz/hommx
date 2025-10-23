@@ -1,0 +1,69 @@
+name: CI
+run-name: Continuous Integration Action
+
+# -- Trigger Events --------------------------------------------------------------------------------
+on:
+  workflow_dispatch:
+  push:
+    branches:
+        - main
+  pull_request:
+    types: [opened, reopened, closed]
+    branches:
+      - main
+
+# -- Jobs ------------------------------------------------------------------------------------------
+jobs:
+  # Format code with Ruff (checks for failure)
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        id: checkout-code
+        uses: actions/checkout@v5
+      - name: Format with ruff
+        id: format-with-ruff
+        uses: astral-sh/ruff-action@v3
+        with:
+          args: "format"
+
+  # Build documentation without deploying
+  docs:
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - name: Checkout code
+        id: checkout-code
+        uses: actions/checkout@v5
+      - name: Install Pixi
+        id: setup-pixi
+        uses: prefix-dev/setup-pixi@v0.9.0
+        with:
+          cache: true
+          locked: true
+      - name: Install dependencies
+        id: install-deps
+        run: pixi install -e docs
+      - name: Build MkDocs documentation
+        id: build-docs
+        run: pixi run -e docs build-docs
+
+  # Run tests with Pytest
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        id: checkout-code
+        uses: actions/checkout@v5
+      - name: Install Pixi
+        id: setup-pixi
+        uses: prefix-dev/setup-pixi@v0.9.0
+        with:
+          cache: true
+          locked: true
+      - name: Install dependencies
+        id: install-deps
+        run: pixi install --environment test
+      - name: Run tests with Pytest
+        id: run-tests
+        run: pixi run --environment test pytest
