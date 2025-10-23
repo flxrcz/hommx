@@ -41,8 +41,12 @@ ipykernel = ">=6.29.5,<7"
 pytest = ">=8.4.1,<9"
 tqdm = "*"
 
+[tool.pixi.feature.test.dependencies]
+pytest = "*"
+pytest-cov = "*"
+
 [tool.pixi.environments]
-dev = { features = ["dev"], solve-group = "default" }
+dev = { features = ["dev", "test"], solve-group = "default" }
 
 
 
@@ -105,6 +109,7 @@ select = [
 fixable = ["ALL"]
 unfixable = []
 dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+per-file-ignores = { "test/*" = ["D100", "D102", "D103", "D107", "INP001", "N802"] }
 
 [tool.ruff.format]
 quote-style = "double"
@@ -114,3 +119,19 @@ line-ending = "auto"
 docstring-code-format = true
 docstring-code-line-length = "dynamic"
 
+# ------------------------------------------------------------------------------------- #
+#                                       PYTEST                                          #
+# ------------------------------------------------------------------------------------- #
+[tool.pytest.ini_options]
+testpaths = ["test"]
+addopts = [
+    "-v",
+    "--import-mode=importlib",
+    "--cov=hommx",
+#    "--cov-config=.coveragerc",
+]
+markers = [
+    "unit: unit tests",
+    "integration: integration tests",
+    "slow: tests with long runtime",
+]
