@@ -168,7 +168,7 @@ def rescale_mesh(
         shift: (3,) shape array containing the shift.
 
     For example consider the unit-square $[0,1]^2$.
-    This is remapped to $scale*[0, 1]^2 + shift = [shift[0], scale+shift[1]]^2$.
+    This is remapped to $\text{scale}*[0, 1]^2 + \text{shift} = [\text{shift}[0], \text{scale}+\text{shift}[1]]^2$.
     This is used to map between the Unit cell $Y=[0,1]^d$ and $Y_\varepsilon$ in the HMM.
     """
     shift = np.asarray(shift)
@@ -195,7 +195,7 @@ def rescale_mesh_in_place(
         shift: (3,) shape array containing the shift.
 
     For example consider the unit-square $[0,1]^2$.
-    This is remapped to $scale*[0, 1]^2 + shift = [shift[0], scale+shift[1]]^2$.
+    This is remapped to $\text{scale}*[0, 1]^2 + \text{shift} = [\text{shift}[0], \text{scale}+\text{shift}[1]]^2$.
     This is used to map between the Unit cell $Y=[0,1]^d$ and $Y_\varepsilon$ in the HMM.
     """
     shift = np.asarray(shift)
@@ -218,7 +218,12 @@ def create_periodic_boundary_conditions(
     on the unit square we would have $(x_0, x_1) = (y_0, y_1) = (0, 1)$
     Internally we create slave DoFs at $u(x, y_1)$ and $u(x_1, y)$.
     Some attention need to be paid because the node at $(x_1,y_1)$ is constrained twice.
-    We use a workaround adapted from: https://github.com/jorgensd/dolfinx_mpc/blob/main/python/demos/demo_periodic_gep.py
+    We use a workaround adapted from: [dolfinx_mpc](https://github.com/jorgensd/dolfinx_mpc/blob/main/python/demos/demo_periodic_gep.py)
+
+    Args:
+        msh: Mesh that the boundary conditions should be applied to
+        function_space: Function Space on whicht the bc should be applied
+        bcs: Dirichlet Boundary Conditions, here the constraint is ignored
     """
     # meshtags used to locate boundary entitites
     if bcs is None:

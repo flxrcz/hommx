@@ -17,12 +17,8 @@ from dolfinx.geometry import PointOwnershipData
 from petsc4py import PETSc
 from tqdm import tqdm
 
-from hommx.cell_problem import PeriodicLinearProblem
-from hommx.helpers import (
-    create_periodic_boundary_conditions,
-    rescale_mesh,
-    rescale_mesh_in_place,
-)
+import hommx.cell_problem as cell_problem
+import hommx.helpers as helpers
 
 REFERENCE_EVALUATION_POINT = np.array([[1 / 3, 1 / 3]])
 
@@ -43,10 +39,10 @@ class PoissonHMM:
     using the adapted bilinear form
 
     $$
-    a_H_v(v_H, w_H) = \sum_{T\in \mathcal T_H} \frac{|T|}{|Y_\varepsilon(c_T)|} \int_{Y_\varepsilon(c_T)} A(c_T, \frac{x}{\varepsilon}) \nabla R_{T, h}(v_h)\cdot \nabla R_{T, h} dx,
+    a_H(v_H, w_H) = \sum_{T\in \mathcal T_H} \frac{|T|}{|Y_\varepsilon(c_T)|} \int_{Y_\varepsilon(c_T)} A(c_T, \frac{x}{\varepsilon}) \nabla R_{T, h}(v_h)\cdot \nabla R_{T, h} dx,
     $$
 
-    where $R_{T, h} = v_H|_{Y_\varepsilon(c_T)} + \tilde{v_h}, \tilde{v_h}\in V_{h, #}(Y_\varepsilon(c_T))$ is the reconstruction operator,
+    where $R_{T, h} = v_H|_{Y_\varepsilon(c_T)} + \tilde{v_h}, \tilde{v_h}\in V_{h, \#}(Y_\varepsilon(c_T))$ is the reconstruction operator,
     where $\tilde{v_h}$ is the solution to
 
     $$
@@ -68,11 +64,11 @@ class PoissonHMM:
 
 
     Notes:
-    - For now only zero-Dirichlet Boundary Conditions are implemented.
-    - It is the users responsibility to ensure that the micro meshes fit into the macro mesh cells.
-    I.e. the shifted and scaled versions of $Y$ $Y_\varepsilon(c_T)$ need to fit within the element $T$.
-    Otherwise the interpolation of the macro scale basis functions to the micro scale may lead to
-    unexpected behaviour.
+        - For now only zero-Dirichlet Boundary Conditions are implemented.
+        - It is the users responsibility to ensure that the micro meshes fit into the macro mesh cells.
+        I.e. the shifted and scaled versions of $Y$ $Y_\varepsilon(c_T)$ need to fit within the element $T$.
+        Otherwise the interpolation of the macro scale basis functions to the micro scale may lead to
+        unexpected behaviour.
     """
 
     def __init__(
@@ -118,7 +114,9 @@ class PoissonHMM:
         self._coeff = A
         self._f = f
         self._eps = eps
-        self._cell_mesh = rescale_mesh(msh_micro)  # create a copy of the mesh, since we modify it
+        self._cell_mesh = helpers.rescale_mesh(
+            msh_micro
+        )  # create a copy of the mesh, since we modify it
         self._V_macro = fem.functionspace(self._msh, ("Lagrange", 1))  # Macroscopic function space
         self._u = ufl.TrialFunction(self._V_macro)
         self._v = ufl.TestFunction(self._V_macro)
@@ -177,7 +175,7 @@ class PoissonHMM:
         # In practice this may end up failing once, because dolfinx_mpc only guarantees
         # that the boundary conditions work well on the function space they were created on.
         V_micro = fem.functionspace(self._cell_mesh, ("Lagrange", 1))
-        self._mpc = create_periodic_boundary_conditions(self._cell_mesh, V_micro, self._bcs)
+        self._mpc = helpers.create_periodic_boundary_conditions(self._cell_mesh, V_micro, self._bcs)
 
         num_local_cells = self._V_macro.mesh.topology.index_map(2).size_local
         # setup of macro functions once on each process
@@ -262,7 +260,7 @@ class PoissonHMM:
             grad_v_micro = fem.Constant(self._cell_mesh, grad_v_micro_list[i])
             a = ufl.inner(A_micro * ufl.grad(v_tilde), ufl.grad(z)) * ufl.dx
             L = -ufl.inner(A_micro * grad_v_micro, ufl.grad(z)) * ufl.dx
-            problem = PeriodicLinearProblem(
+            problem = cell_problem.PeriodicLinearProblem(
                 a, L, self._mpc, petsc_options=self._petsc_options_cell_problem
             )
             v_tilde_sol = problem.solve()
@@ -295,11 +293,11 @@ class PoissonHMM:
         self, c_t: np.ndarray[tuple[int], np.dtype[float]]
     ) -> tuple[fem.FunctionSpace, np.ndarray[tuple[int], np.dtype[int]], PointOwnershipData]:
         if self._old_c_t is None:
-            self._cell_mesh = rescale_mesh(
+            self._cell_mesh = helpers.rescale_mesh(
                 self._cell_mesh, self._eps, c_t - self._eps * np.array([1 / 2, 1 / 2, 0])
             )
         else:
-            self._cell_mesh = rescale_mesh_in_place(
+            self._cell_mesh = helpers.rescale_mesh_in_place(
                 self._cell_mesh, scale=1, shift=-self._old_c_t + c_t
             )
         self._old_c_t = c_t

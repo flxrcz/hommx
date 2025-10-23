@@ -17,7 +17,7 @@ class PeriodicLinearProblem(dolfinx_mpc.LinearProblem):
     """
     Class for solving a linear variational problem with periodic boundary conditions
     with multi point constraints of the form
-    a(u, v) = L(v) for all v using PETSc as a linear algebra backend.
+    $a(u, v) = L(v)$ for all v using PETSc as a linear algebra backend.
 
     The solution is only unique up to a constant.
     This is handled by telling the PETSc KSP solver about the nullspace.
