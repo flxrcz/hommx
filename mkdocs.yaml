@@ -1,0 +1,123 @@
+# ==================================================================================================
+# == Configuration for static site generation with MKDocs ==========================================
+# ==================================================================================================
+# -- Site metadata ---------------------------------------------------------------------------------
+docs_dir: docs/
+site_name: hommx
+site_author: Felix Racz
+site_description: Example repo on how to use MKDocs with the group template
+repo_url: https://github.com/flxrcz/hommx
+repo_name: hommx
+
+# -- Material theme configuration ------------------------------------------------------------------
+theme:
+  name: material
+  features:
+    - content.code.annotate # Enable annotations in code blocks
+    - content.code.copy # Make copy button available on code blocks
+    - content.code.select # Allow selection of lines by the user
+    - header.autohide # header disappears as you scroll
+    - navigation.sections # Sections are included in the navigation on the left.
+    - navigation.top # Show "go to top" button when scrolling up
+    - toc.integrate # Table of contents is integrated on the left; does not appear separately on the right.
+    - search.suggest # Make suggestions for most likely search word
+
+  # Define light and dark theme, both based on KIT green
+  palette:
+    - scheme: default
+      toggle:
+        icon: material/toggle-switch
+        name: Switch to dark mode
+    - scheme: slate
+      toggle:
+        icon: material/toggle-switch-off-outline
+        name: Switch to light mode
+
+  # Set Icons
+  favicon: images/favicon.svg
+  icon:
+    annotation: material/plus-circle
+    logo: material/grid
+    repo: material/git
+
+# -- Markdown extensions ---------------------------------------------------------------------------
+markdown_extensions:
+  - admonition # Enable call-outs
+  - attr_list # Add HTML to markdown elements
+  - footnotes # Enable footnotes
+  - md_in_html # Read in raw HTML blocks
+  - tables # Allow tables in markdown
+  - pymdownx.betterem # Improve bold and italic fonts
+  - pymdownx.blocks.caption # Enable captions for blocks
+  - pymdownx.caret # Superscripts
+  - pymdownx.details # Make elements collapseable with "???+"
+  - pymdownx.inlinehilite # Syntax highlighting for inline code blocks
+  - pymdownx.mark # Mark text
+  - pymdownx.tilde # Subscripts
+  - pymdownx.snippets # Embed content from arbitrary files like source code
+  - pymdownx.superfences # Nesting of content blocks
+  - pymdownx.emoji: # Use emojis
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight: # Syntax highlighting for code blocks
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.arithmatex: # Rendering of Latex code (math mode with MathJax)
+      generic: true
+  - toc: # Automatically generate table of contents
+      permalink: true
+
+# -- Plugins ---------------------------------------------------------------------------------------
+plugins:
+  - search # Default search engine
+  - autorefs: # Generate references between files
+      resolve_closest: false
+  - mkdocstrings: # Inclusion of docstrings in code base
+      default_handler: python
+      handlers:
+        python:
+          paths: [src]
+          options:
+            allow_inspection: true
+            annotations_path: source
+            docstring_style: google
+            filters: []
+            group_by_category: true
+            line_length: 100
+            members: true
+            members_order: source
+            merge_init_into_class: false
+            separate_signature: true
+            show_bases: true
+            show_category_heading: false
+            show_if_no_docstring: false
+            show_root_full_path: false
+            show_root_heading: true
+            show_root_members_full_path: true
+            show_root_toc_entry: true
+            show_signature: true
+            show_signature_annotations: true
+            show_source: false
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            imported_members: false
+
+# -- Extra configuration ---------------------------------------------------------------------------
+extra_javascript:
+  - config/mathjax.js # MathJax configuration
+  - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js
+
+extra_css:
+  - config/style.css # Colors and formats
+
+# -- Navigation ------------------------------------------------------------------------------------
+nav:
+  - Getting Started: index.md
+  - Usage:
+      - Example Usage: usage/usage.md
+  - API Reference:
+      - hmm: api/hmm.md
+      - helpers: api/helpers.md
+      - cell_problem: api/cell_problem.md
+
