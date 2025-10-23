@@ -1,0 +1,116 @@
+[project]
+authors = [{name = "Felix Racz", email = "felix.racz@student.kit.edu"}]
+description = "Dolfinx package for the Heterogeneous Multiscale Method (HMM)."
+name = "hommx"
+version = "0.0.1"
+requires-python = ">=3.13"
+dependencies = ["pyvista[jupyter]", "trame-server==3.6.3"]
+
+# ------------------------------------------------------------------------------------- #
+#                                          PIXI                                         #
+# ------------------------------------------------------------------------------------- #
+
+[tool.pixi.project]
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+
+# ------------------------------------------------------------------------------------- #
+#                                   PIXI DEPENDENCIES                                   #
+# ------------------------------------------------------------------------------------- #
+
+# ---------------------------- SHARED PACKAGE DEPENDENCIES ---------------------------- #
+
+[tool.pixi.dependencies]
+fenics-dolfinx = ">=0.9.0,<1"
+dolfinx_mpc = ">=0.9.3, <1"
+numpy = "*"
+scipy = ">=1.15.2,<2"
+sympy = ">=1.14.0,<2"
+pandas = ">=2.3.0,<3"
+pip = ">=25.1.1,<26"
+scifem = ">=0.13,<1"
+
+
+[tool.pixi.pypi-dependencies]
+hommx = { path = ".", editable = true }
+
+[tool.pixi.feature.dev.dependencies]
+ipyparallel = "*"
+ipykernel = ">=6.29.5,<7"
+pytest = ">=8.4.1,<9"
+tqdm = "*"
+
+[tool.pixi.environments]
+dev = { features = ["dev"], solve-group = "default" }
+
+
+
+
+# ------------------------------------------------------------------------------------- #
+#                                         RUFF                                          #
+# ------------------------------------------------------------------------------------- #
+
+[tool.ruff]
+line-length = 100
+extend-include = ["*.ipynb"]
+exclude = [
+    ".bzr",
+    ".direnv",
+    ".eggs",
+    ".git",
+    ".git-rewrite",
+    ".hg",
+    ".ipynb_checkpoints",
+    ".mypy_cache",
+    ".nox",
+    ".pants.d",
+    ".pyenv",
+    ".pytest_cache",
+    ".pytype",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    ".vscode",
+    "__pypackages__",
+    "_build",
+    "buck-out",
+    "build",
+    "dist",
+    "node_modules",
+    "site-packages",
+    "venv",
+]
+
+[tool.ruff.lint]
+ignore = [
+  "N803", # https://docs.astral.sh/ruff/rules/invalid-argument-name
+  "N806", # https://docs.astral.sh/ruff/rules/non-lowercase-variable-in-function
+  "E501", # https://docs.astral.sh/ruff/faq/#is-the-ruff-linter-compatible-with-black
+]
+select = [
+  # pyflakes
+  "F",
+  # pycodestyle
+  "E",
+  "W",
+  # isort
+  "I",
+  # pep8-naming
+  "N",
+  # pyupgrade
+  "UP",
+]
+fixable = ["ALL"]
+unfixable = []
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+docstring-code-format = true
+docstring-code-line-length = "dynamic"
+
