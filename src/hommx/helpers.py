@@ -226,18 +226,13 @@ def create_periodic_boundary_conditions(
     fdim = msh.topology.dim - 1
     TAG_X = 2
     TAG_Y = 3
-    slave_coord_x = 1  # the x coordinate at the bottom of the rectangular mesh
-    master_coord_x = 0  # the x coordinate at the top of the rectangular mesh
 
-    slave_coord_y = 1  # the y coordinate at the bottom of the rectangular mesh
-    master_coord_y = 0  # the y coordinate at the top of the rectangular mesh
+    # figure out master and slave coordinates, i.e. bottom, top, left, right of box
+    slave_coord_x = np.max(msh.geometry.x, axis=0)[0]
+    slave_coord_y = np.max(msh.geometry.x, axis=0)[1]
 
-    # figure out
-    slave_coord_x = np.min(msh.geometry.x, axis=0)[0]
-    slave_coord_y = np.min(msh.geometry.x, axis=0)[1]
-
-    master_coord_x = np.max(msh.geometry.x, axis=0)[0]
-    master_coord_y = np.max(msh.geometry.x, axis=0)[1]
+    master_coord_x = np.min(msh.geometry.x, axis=0)[0]
+    master_coord_y = np.min(msh.geometry.x, axis=0)[1]
 
     # marker functions for slaves and master
     def is_slave_x(x):

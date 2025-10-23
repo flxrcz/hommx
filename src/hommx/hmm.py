@@ -122,7 +122,8 @@ class PoissonHMM:
         self._V_macro = fem.functionspace(self._msh, ("Lagrange", 1))  # Macroscopic function space
         self._u = ufl.TrialFunction(self._V_macro)
         self._v = ufl.TestFunction(self._V_macro)
-        L = ufl.inner(f, self._v) * ufl.dx
+        self._x = ufl.SpatialCoordinate(self._msh)
+        L = ufl.inner(f(self._x), self._v) * ufl.dx
         self._L = fem.form(L)
         self._b = create_vector(self._L)
         self._u = fem.Function(self._V_macro)
@@ -175,8 +176,8 @@ class PoissonHMM:
         # In theory and practice this should be fine, since the meshes are just scaled.
         # In practice this may end up failing once, because dolfinx_mpc only guarantees
         # that the boundary conditions work well on the function space they were created on.
-        V_micro = fem.functionspace(self._msh_micro, ("Lagrange", 1))
-        self._mpc = create_periodic_boundary_conditions(self._msh_micro, V_micro, self._bcs)
+        V_micro = fem.functionspace(self._cell_mesh, ("Lagrange", 1))
+        self._mpc = create_periodic_boundary_conditions(self._cell_mesh, V_micro, self._bcs)
 
         num_local_cells = self._V_macro.mesh.topology.index_map(2).size_local
         # setup of macro functions once on each process
@@ -295,7 +296,7 @@ class PoissonHMM:
     ) -> tuple[fem.FunctionSpace, np.ndarray[tuple[int], np.dtype[int]], PointOwnershipData]:
         if self._old_c_t is None:
             self._cell_mesh = rescale_mesh(
-                self._msh_micro, self._eps, c_t - self._eps * np.array([1 / 2, 1 / 2, 0])
+                self._cell_mesh, self._eps, c_t - self._eps * np.array([1 / 2, 1 / 2, 0])
             )
         else:
             self._cell_mesh = rescale_mesh_in_place(
