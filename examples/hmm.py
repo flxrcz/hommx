@@ -1,16 +1,28 @@
 # %%
+import numpy as np
 import ufl
-from dolfinx import mesh
+from dolfinx import fem, mesh
 from mpi4py import MPI
 
 from hommx.hmm import PoissonHMM
 
-eps = 1/2**5
+eps = 1 / 2**5
+
+
 def A(x):
     def A(y):
-        return 1 + 0.5*ufl.sin(2*ufl.pi*y[0]) + 0.5*ufl.sin(2*ufl.pi*y[1])
+        return 1 / (2 + ufl.cos(2 * ufl.pi * y[0]))
+
     return A
-f=1
+
+
+def f(x):
+    return ufl.pi**2 * (1 / 2 + 1 / ufl.sqrt(3)) * ufl.sin(ufl.pi * x[0]) * ufl.sin(ufl.pi * x[1])
+
+
+def solution(x):
+    return np.sin(np.pi * x[0]) * np.sin(np.pi * x[1])
+
 
 # %%
 N = 15
@@ -27,3 +39,9 @@ phmm.solve()
 
 # %%
 phmm.plot_solution()
+
+# %%
+u = fem.Function(phmm._V_macro)
+u.interpolate(solution)
+
+# %%
