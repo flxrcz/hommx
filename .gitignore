@@ -5,3 +5,6 @@
 # python stuff
 __pycache__/
 *.py[cod]
+
+# testing
+.coverage
