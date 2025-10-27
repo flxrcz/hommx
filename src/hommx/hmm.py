@@ -13,7 +13,6 @@ import ufl
 from dolfinx import fem, la, mesh, plot
 from dolfinx.fem.assemble import _assemble_vector_array
 from dolfinx.fem.petsc import create_vector
-from dolfinx.geometry import PointOwnershipData
 from petsc4py import PETSc
 from tqdm import tqdm
 
@@ -168,14 +167,19 @@ class PoissonHMM:
         """Assembly of the stiffness matrix in parallel."""
         if self._A.assembled:
             return
-        # set up variables that can be reused across all cell solves
-        self._old_c_t = None
-        # We set up the periodic boundary conditions once.
-        # In theory and practice this should be fine, since the meshes are just scaled.
-        # In practice this may end up failing once, because dolfinx_mpc only guarantees
-        # that the boundary conditions work well on the function space they were created on.
-        V_micro = fem.functionspace(self._cell_mesh, ("Lagrange", 1))
-        self._mpc = helpers.create_periodic_boundary_conditions(self._cell_mesh, V_micro, self._bcs)
+        # set up the micro mesh and micro variables
+        self._V_micro = fem.functionspace(self._cell_mesh, ("Lagrange", 1))
+        self._mpc = helpers.create_periodic_boundary_conditions(
+            self._cell_mesh, self._V_micro, self._bcs
+        )
+        # wrap x in A(x, y) in a Constant to avoid recompilation
+        self._x_macro = fem.Constant(
+            self._cell_mesh, np.zeros((self._cell_mesh.geometry.x.shape[1],))
+        )
+        self._v_tilde = ufl.TrialFunction(self._V_micro)
+        self._z = ufl.TestFunction(self._V_micro)
+        self._y = ufl.SpatialCoordinate(self._cell_mesh)
+        self._grad_v_micro = fem.Constant(self._cell_mesh, np.zeros((2,)))
 
         num_local_cells = self._V_macro.mesh.topology.index_map(2).size_local
         # setup of macro functions once on each process
@@ -222,11 +226,10 @@ class PoissonHMM:
         c_t = np.mean(points, axis=0)
 
         # set up micro function space
-        V_micro = self._setup_micro_mesh(c_t)
         v_micro_list = []
         grad_v_micro_list = []
 
-        coords_micro = V_micro.tabulate_dof_coordinates()
+        coords_micro = self._V_micro.tabulate_dof_coordinates()
         _points = coords_micro
 
         global_dofs = self._V_macro.dofmap.index_map.local_to_global(local_dofs)
@@ -237,13 +240,13 @@ class PoissonHMM:
             self._v_macro.x.array[local_dof] = 1.0
 
             # interpolate basis function on micro space
-            v_micro = fem.Function(V_micro)
+            v_micro = fem.Function(self._V_micro)
             # v_micro.interpolate_nonmatching(v_macro, interpolation_cells, interpolation_data) # DOES NOT WORK IN PARALLEL
             cells = np.full(_points.shape[0], cell_index, dtype=np.int32)
             vals = self._v_macro.eval(_points, cells=cells)
             vals = np.asarray(vals).flatten()
 
-            v_micro = fem.Function(V_micro)
+            v_micro = fem.Function(self._V_micro)
             v_micro.x.array[:] = vals
             v_micro_list.append(v_micro)
 
@@ -252,14 +255,13 @@ class PoissonHMM:
 
         # solve cell_problems
         v_tilde_list = []  # correctors
-        v_tilde = ufl.TrialFunction(V_micro)
-        z = ufl.TestFunction(V_micro)
-        y = ufl.SpatialCoordinate(self._cell_mesh)
-        A_micro = self._coeff(c_t)(y / self._eps)
+        # set x to cell center
+        self._x_macro.value[:] = c_t
+        A_micro = self._coeff(self._x_macro, self._y)
         for i in range(3):
-            grad_v_micro = fem.Constant(self._cell_mesh, grad_v_micro_list[i])
-            a = ufl.inner(A_micro * ufl.grad(v_tilde), ufl.grad(z)) * ufl.dx
-            L = -ufl.inner(A_micro * grad_v_micro, ufl.grad(z)) * ufl.dx
+            self._grad_v_micro.value[:] = grad_v_micro_list[i]
+            a = ufl.inner(A_micro * ufl.grad(self._v_tilde), ufl.grad(self._z)) * ufl.dx
+            L = -ufl.inner(A_micro * self._grad_v_micro, ufl.grad(self._z)) * ufl.dx
             problem = cell_problem.PeriodicLinearProblem(
                 a, L, self._mpc, petsc_options=self._petsc_options_cell_problem
             )
@@ -273,7 +275,7 @@ class PoissonHMM:
         # build reconstruction operator R_T
         R_list = []
         for i in range(3):
-            R_i = fem.Function(V_micro)
+            R_i = fem.Function(self._V_micro)
             R_i.x.array[:] = v_micro_list[i].x.array + v_tilde_list[i].x.array
             R_list.append(R_i)
         # local stiffness matrix
@@ -286,23 +288,8 @@ class PoissonHMM:
 
         # scale contribution
         cell_area = _triangle_area(points)
-        Y_eps_area = self._eps**2
+        Y_eps_area = 1
         return S_loc * cell_area / Y_eps_area
-
-    def _setup_micro_mesh(
-        self, c_t: np.ndarray[tuple[int], np.dtype[float]]
-    ) -> tuple[fem.FunctionSpace, np.ndarray[tuple[int], np.dtype[int]], PointOwnershipData]:
-        if self._old_c_t is None:
-            self._cell_mesh = helpers.rescale_mesh(
-                self._cell_mesh, self._eps, c_t - self._eps * np.array([1 / 2, 1 / 2, 0])
-            )
-        else:
-            self._cell_mesh = helpers.rescale_mesh_in_place(
-                self._cell_mesh, scale=1, shift=-self._old_c_t + c_t
-            )
-        self._old_c_t = c_t
-        V_micro = fem.functionspace(self._cell_mesh, ("Lagrange", 1))
-        return V_micro
 
     def solve(self) -> fem.Function:
         """Assemble the LHS, RHS and solve the problem
