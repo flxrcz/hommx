@@ -137,10 +137,5 @@ addopts = [
     "-v",
     "--import-mode=importlib",
     "--cov=hommx",
-#    "--cov-config=.coveragerc",
-]
-markers = [
-    "unit: unit tests",
-    "integration: integration tests",
-    "slow: tests with long runtime",
+    "--cov-config=.coveragerc",
 ]

@@ -2261,7 +2261,7 @@ packages:
 - pypi: ./
   name: hommx
   version: 0.0.1
-  sha256: 20409640155f248293aec147b127af4a6b036d5c8d1636613720970e953f8579
+  sha256: 5744c9b11831fbd8375659c4ea72cbbaeea06d3f3c5194d32888037708caf7f1
   requires_dist:
   - pyvista[jupyter]
   - trame-server==3.6.3
