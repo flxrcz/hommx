@@ -167,24 +167,10 @@ class PoissonHMM:
         """Assembly of the stiffness matrix in parallel."""
         if self._A.assembled:
             return
-        # set up the micro mesh and micro variables
-        self._V_micro = fem.functionspace(self._cell_mesh, ("Lagrange", 1))
-        self._mpc = helpers.create_periodic_boundary_conditions(
-            self._cell_mesh, self._V_micro, self._bcs
-        )
-        # wrap x in A(x, y) in a Constant to avoid recompilation
-        self._x_macro = fem.Constant(
-            self._cell_mesh, np.zeros((self._cell_mesh.geometry.x.shape[1],))
-        )
-        self._v_tilde = ufl.TrialFunction(self._V_micro)
-        self._z = ufl.TestFunction(self._V_micro)
-        self._y = ufl.SpatialCoordinate(self._cell_mesh)
-        self._grad_v_micro = fem.Constant(self._cell_mesh, np.zeros((2,)))
 
+        self._setup_cell_problem()
         num_local_cells = self._V_macro.mesh.topology.index_map(2).size_local
-        # setup of macro functions once on each process
-        self._v_macro = fem.Function(self._V_macro)
-        self._grad_v_macro = fem.Expression(ufl.grad(self._v_macro), REFERENCE_EVALUATION_POINT)
+
         # cell problem loop
         for local_cell_index in tqdm(range(num_local_cells)):
             local_dofs = self._V_macro.dofmap.cell_dofs(local_cell_index)
@@ -229,9 +215,6 @@ class PoissonHMM:
         v_micro_list = []
         grad_v_micro_list = []
 
-        coords_micro = self._V_micro.tabulate_dof_coordinates()
-        _points = coords_micro
-
         global_dofs = self._V_macro.dofmap.index_map.local_to_global(local_dofs)
         for local_dof, global_dof in zip(local_dofs, global_dofs):
             # set up macro basis function
@@ -242,11 +225,10 @@ class PoissonHMM:
             # interpolate basis function on micro space
             v_micro = fem.Function(self._V_micro)
             # v_micro.interpolate_nonmatching(v_macro, interpolation_cells, interpolation_data) # DOES NOT WORK IN PARALLEL
-            cells = np.full(_points.shape[0], cell_index, dtype=np.int32)
-            vals = self._v_macro.eval(_points, cells=cells)
+            cells = np.full(self._points_micro.shape[0], cell_index, dtype=np.int32)
+            vals = self._v_macro.eval(self._points_micro, cells=cells)
             vals = np.asarray(vals).flatten()
 
-            v_micro = fem.Function(self._V_micro)
             v_micro.x.array[:] = vals
             v_micro_list.append(v_micro)
 
@@ -256,14 +238,16 @@ class PoissonHMM:
         # solve cell_problems
         v_tilde_list = []  # correctors
         # set x to cell center
-        self._x_macro.value[:] = c_t
+        self._x_macro.value = c_t
         A_micro = self._coeff(self._x_macro, self._y)
+        A_micro = self._A_micro
         for i in range(3):
-            self._grad_v_micro.value[:] = grad_v_micro_list[i]
-            a = ufl.inner(A_micro * ufl.grad(self._v_tilde), ufl.grad(self._z)) * ufl.dx
-            L = -ufl.inner(A_micro * self._grad_v_micro, ufl.grad(self._z)) * ufl.dx
+            self._grad_v_micro.value = grad_v_micro_list[i]
             problem = cell_problem.PeriodicLinearProblem(
-                a, L, self._mpc, petsc_options=self._petsc_options_cell_problem
+                self._a_micro_compiled,
+                self._L_micro_compiled,
+                self._mpc,
+                petsc_options=self._petsc_options_cell_problem,
             )
             v_tilde_sol = problem.solve()
             if problem._solver.getConvergedReason() < 0:
@@ -288,8 +272,36 @@ class PoissonHMM:
 
         # scale contribution
         cell_area = _triangle_area(points)
-        Y_eps_area = 1
-        return S_loc * cell_area / Y_eps_area
+        Y_area = 1
+        return S_loc * cell_area / Y_area
+
+    def _setup_cell_problem(self) -> None:
+        """Set up variables, function spaces and boundary conditions that are used throughout all cell problems."""
+        # micro function space and periodic boundary conditions
+        self._V_micro = fem.functionspace(self._cell_mesh, ("Lagrange", 1))
+        self._mpc = helpers.create_periodic_boundary_conditions(
+            self._cell_mesh, self._V_micro, self._bcs
+        )
+        self._points_micro = self._V_micro.tabulate_dof_coordinates()
+        self._v_tilde = ufl.TrialFunction(self._V_micro)
+        self._z = ufl.TestFunction(self._V_micro)
+        self._y = ufl.SpatialCoordinate(self._cell_mesh)
+        self._grad_v_micro = fem.Constant(self._cell_mesh, np.zeros((2,)))
+        # wrap x in A(x, y) in a Constant to avoid recompilation
+        self._x_macro = fem.Constant(
+            self._cell_mesh, np.zeros((self._cell_mesh.geometry.x.shape[1],))
+        )
+        self._A_micro = self._coeff(self._x_macro, self._y)
+        # precompile cell problem LHS and RHS
+        self._a_micro_compiled = fem.form(
+            ufl.inner(self._A_micro * ufl.grad(self._v_tilde), ufl.grad(self._z)) * ufl.dx
+        )
+        self._L_micro_compiled = fem.form(
+            -ufl.inner(self._A_micro * self._grad_v_micro, ufl.grad(self._z)) * ufl.dx
+        )
+        # setup of macro functions once for all cell problems
+        self._v_macro = fem.Function(self._V_macro)
+        self._grad_v_macro = fem.Expression(ufl.grad(self._v_macro), REFERENCE_EVALUATION_POINT)
 
     def solve(self) -> fem.Function:
         """Assemble the LHS, RHS and solve the problem
