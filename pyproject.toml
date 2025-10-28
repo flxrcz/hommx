@@ -3,8 +3,8 @@ authors = [{name = "Felix Racz", email = "felix.racz@student.kit.edu"}]
 description = "Dolfinx package for the Heterogeneous Multiscale Method (HMM)."
 name = "hommx"
 version = "0.0.1"
-requires-python = ">=3.13"
-dependencies = ["pyvista[jupyter]", "trame-server==3.6.3"]
+requires-python = ">=3.13, <3.14"
+dependencies = ["pyvista[jupyter]==0.46.3", "trame-server==3.6.3"]
 
 # ------------------------------------------------------------------------------------- #
 #                                          PIXI                                         #
@@ -22,7 +22,7 @@ platforms = ["linux-64"]
 # ---------------------------- SHARED PACKAGE DEPENDENCIES ---------------------------- #
 
 [tool.pixi.dependencies]
-fenics-dolfinx = ">=0.9.0,<1"
+fenics-dolfinx = ">=0.9.0,<0.10.0"
 dolfinx_mpc = ">=0.9.3, <1"
 numpy = "*"
 scipy = ">=1.15.2,<2"
