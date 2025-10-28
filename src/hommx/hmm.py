@@ -20,6 +20,7 @@ import hommx.cell_problem as cell_problem
 import hommx.helpers as helpers
 
 REFERENCE_EVALUATION_POINT = np.array([[1 / 3, 1 / 3]])
+NUM_BASIS_FUNCTIONS = 3  # number of basis functions on one element
 
 
 class PoissonHMM:
@@ -38,7 +39,7 @@ class PoissonHMM:
     using the adapted bilinear form
 
     $$
-    a_H(v_H, w_H) = \sum_{T\in \mathcal T_H} \frac{|T|}{|Y_\varepsilon(c_T)|} \int_{Y_\varepsilon(c_T)} A(c_T, \frac{x}{\varepsilon}) \nabla R_{T, h}(v_h)\cdot \nabla R_{T, h} dx,
+    a_H(v_H, w_H) = \sum_{T\in \mathcal T_H} \frac{|T|}{|Y_\varepsilon(c_T)|} \int_{Y_\varepsilon(c_T)} A(c_T, \frac{x}{\varepsilon}) \nabla R_{T, h}(v_h)\cdot \nabla R_{T, h}(w_h) dx,
     $$
 
     where $R_{T, h} = v_H|_{Y_\varepsilon(c_T)} + \tilde{v_h}, \tilde{v_h}\in V_{h, \#}(Y_\varepsilon(c_T))$ is the reconstruction operator,
@@ -239,9 +240,7 @@ class PoissonHMM:
         v_tilde_list = []  # correctors
         # set x to cell center
         self._x_macro.value = c_t
-        A_micro = self._coeff(self._x_macro, self._y)
-        A_micro = self._A_micro
-        for i in range(3):
+        for i in range(NUM_BASIS_FUNCTIONS):
             self._grad_v_micro.value = grad_v_micro_list[i]
             problem = cell_problem.PeriodicLinearProblem(
                 self._a_micro_compiled,
@@ -257,18 +256,11 @@ class PoissonHMM:
             v_tilde_list.append(v_tilde_sol)
 
         # build reconstruction operator R_T
-        R_list = []
-        for i in range(3):
-            R_i = fem.Function(self._V_micro)
-            R_i.x.array[:] = v_micro_list[i].x.array + v_tilde_list[i].x.array
-            R_list.append(R_i)
+        R = self._reconstruction_operator
+        for i in range(NUM_BASIS_FUNCTIONS):
+            R[i].x.array[:] = v_micro_list[i].x.array + v_tilde_list[i].x.array
         # local stiffness matrix
-        S_loc = np.zeros((3, 3))
-        for i in range(3):
-            for j in range(3):
-                S_loc[i, j] = fem.assemble_scalar(
-                    fem.form(ufl.inner(A_micro * ufl.grad(R_list[i]), ufl.grad(R_list[j])) * ufl.dx)
-                )
+        S_loc = self._assemble_local_stiffness_from_cell_problem(R)
 
         # scale contribution
         cell_area = _triangle_area(points)
@@ -302,6 +294,29 @@ class PoissonHMM:
         # setup of macro functions once for all cell problems
         self._v_macro = fem.Function(self._V_macro)
         self._grad_v_macro = fem.Expression(ufl.grad(self._v_macro), REFERENCE_EVALUATION_POINT)
+        # setup of placeholder functions for the reconstruction operator
+        self._reconstruction_operator = [
+            fem.Function(self._V_micro) for i in range(NUM_BASIS_FUNCTIONS)
+        ]
+
+    def _assemble_local_stiffness_from_cell_problem(
+        self, R
+    ) -> np.ndarray[tuple[int, int], np.dtype[float]]:
+        r"""Calculates the contributions to the global stiffness matrix,
+        based on the reconstruction operator applied to the basis functions of the macro mesh
+
+        $$
+        S_{i,j } = \int_{Y_\varepsilon(c_T)} A(c_T, \frac{x}{\varepsilon}) \nabla R_{T, h}(v_{h, i})\cdot \nabla R_{T, h}(w_{h, j}) dx,
+        $$
+
+        """
+        S_loc = np.zeros((NUM_BASIS_FUNCTIONS, NUM_BASIS_FUNCTIONS))
+        for i in range(S_loc.shape[0]):
+            for j in range(S_loc.shape[1]):
+                S_loc[i, j] = fem.assemble_scalar(
+                    fem.form(ufl.inner(self._A_micro * ufl.grad(R[i]), ufl.grad(R[j])) * ufl.dx)
+                )
+        return S_loc
 
     def solve(self) -> fem.Function:
         """Assemble the LHS, RHS and solve the problem
