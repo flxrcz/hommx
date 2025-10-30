@@ -166,7 +166,7 @@ class PoissonHMM:
         if self._A.assembled:
             return
 
-        self._setup_cell_problem()
+        self._setup_cell_problems()
         num_local_cells = self._V_macro.mesh.topology.index_map(2).size_local
 
         # cell problem loop
@@ -176,7 +176,7 @@ class PoissonHMM:
                 PETSc.IntType
             )
             # local assembly for one cell
-            S_loc = self._solve_cell_problem(local_cell_index)
+            S_loc = self._compute_local_stiffness(local_cell_index)
             if np.any(np.isnan(S_loc)):
                 self._logger.error(
                     f"Something went wrong when calculating local matrix on cell {local_cell_index}"
@@ -194,88 +194,21 @@ class PoissonHMM:
         self._A.assemble()
         self._A.zeroRowsColumns(bc_global_dofs, diag=1.0)
 
-    def _solve_cell_problem(self, cell_index: int) -> np.ndarray[tuple[int, int], np.dtype[float]]:
-        """Solves the cell problem on one cell.
-        All computation is done on one process and no communication takes place between the processes.
+    def _setup_cell_problems(self) -> None:
+        """Set up various structures used throughout all cell problems.
 
-        Args:
-            cell_index: process-local index of the cell for which the homogenized coefficient
-            is to be approximated
+        Since all ufl forms are precompiled the mathematical description of the cell problem
+        and stiffness assembly are in this function.
+        If you want to adapt the HMM to your problem, you can simply overwrite this method and
+        change the ufl forms.
 
-        Returns:
-            np.ndarray: local stiffness matrix
+        Notes:
+            This method sets up objects that are used through the cell problems:
+            - function spaces and functions on the cell mesh
+            - periodic boundary conditions
+            - ufl forms containg the cell problem and local stiffness assembly
+                - corresponding constants
         """
-        local_dofs = self._V_macro.dofmap.cell_dofs(cell_index)
-        points = self._V_macro.tabulate_dof_coordinates()[local_dofs]
-        c_t = np.mean(points, axis=0)
-
-        for i, local_dof in enumerate(local_dofs):
-            self._v_macro.x.array[:] = 0.0
-            self._v_macro.x.array[local_dof] = 1.0
-            self._apply_reconstruction_operator(
-                self._v_macro, self._grad_v_macro, cell_index, c_t, self._reconstruction_operator[i]
-            )
-
-        # local stiffness matrix
-        S_loc = self._assemble_local_stiffness_from_cell_problem(self._reconstruction_operator)
-
-        # scale contribution
-        cell_area = _triangle_area(points)
-        Y_area = 1
-        return S_loc * cell_area / Y_area
-
-    def _apply_reconstruction_operator(
-        self,
-        v_macro: fem.Function,
-        grad_v_macro_expr: fem.Expression,
-        cell_index: int,
-        c_t: np.ndarray[tuple[int], np.dtype[float]],
-        R: fem.Function = None,
-    ):
-        """Applies the reconstruction operator on the micro mesh to a
-        function defined on the macro mesh.
-        This is done by first interpolating the macro function onto the micro domain
-        and then solving the cell problem.
-
-        Args:
-            v_macro: Function on the macro function space on which the reconstruction operator
-                should be applied, this is typically a basis function
-            grad_v_macro_expr: dolfinx expression that can calculate the gradient of v_macro
-            cell_index: the process-local index of the cell
-                on which the cell problem should be solved
-            c_t: center of that cell
-            R (optional): function on the micro mesh that stores the solution,
-                if none is provided one is created
-        """
-        if R is None:
-            R = fem.Function(self._V_micro)
-        v_micro = fem.Function(self._V_micro)
-        # v_micro.interpolate_nonmatching(v_macro, interpolation_cells, interpolation_data) # DOES NOT WORK IN PARALLEL
-        cells = np.full(self._points_micro.shape[0], cell_index, dtype=np.int32)
-        vals = v_macro.eval(self._points_micro, cells=cells)
-        vals = np.asarray(vals).flatten()
-
-        v_micro.x.array[:] = vals
-
-        # update gradient constant in compiled form
-        self._grad_v_micro.value = grad_v_macro_expr.eval(self._msh, [cell_index]).flatten()
-        self._x_macro.value = c_t
-        problem = cell_problem.PeriodicLinearProblem(
-            self._a_micro_compiled,
-            self._L_micro_compiled,
-            self._mpc,
-            petsc_options=self._petsc_options_cell_problem,
-        )
-        v_tilde_sol = problem.solve()
-        if problem._solver.getConvergedReason() < 0:
-            self._logger.error(
-                f"Something went wrong in the cell problem solving for cell {cell_index}. PETSc solver failed with reason {problem._solver.getConvergedReason()}"
-            )
-        R.x.array[:] = v_micro.x.array + v_tilde_sol.x.array
-        return R
-
-    def _setup_cell_problem(self) -> None:
-        """Set up variables, function spaces and boundary conditions that are used throughout all cell problems."""
         # micro function space and periodic boundary conditions
         self._V_micro = fem.functionspace(self._cell_mesh, ("Lagrange", 1))
         self._mpc = helpers.create_periodic_boundary_conditions(
@@ -302,25 +235,132 @@ class PoissonHMM:
         self._v_macro = fem.Function(self._V_macro)
         self._grad_v_macro = fem.Expression(ufl.grad(self._v_macro), REFERENCE_EVALUATION_POINT)
         # setup of placeholder functions for the reconstruction operator
-        self._reconstruction_operator = [
-            fem.Function(self._V_micro) for i in range(NUM_BASIS_FUNCTIONS)
-        ]
+        self._v_micros = [fem.Function(self._V_micro) for _ in range(NUM_BASIS_FUNCTIONS)]
+        # placeholders for the correctors
+        self._correctors = [fem.Function(self._V_micro) for _ in range(NUM_BASIS_FUNCTIONS)]
         self._local_stiffness_forms = [
             [
                 fem.form(
                     ufl.inner(
-                        self._A_micro * ufl.grad(self._reconstruction_operator[i]),
-                        ufl.grad(self._reconstruction_operator[j]),
+                        self._A_micro
+                        * (ufl.grad(self._v_micros[i]) + ufl.grad(self._correctors[i])),
+                        ufl.grad(self._v_micros[j]) + ufl.grad(self._correctors[j]),
                     )
                     * ufl.dx
                 )
-                for i in range(3)
+                for i in range(NUM_BASIS_FUNCTIONS)
             ]
-            for j in range(3)
+            for j in range(NUM_BASIS_FUNCTIONS)
         ]
 
+    def _compute_local_stiffness(
+        self, cell_index: int
+    ) -> np.ndarray[tuple[int, int], np.dtype[float]]:
+        """Computes the local stiffness matrix on one element by solving the cell problem for all
+        basis functions on that cell.
+        All computation is done on one process and no communication takes place between the processes.
+
+        Args:
+            cell_index: process-local index of the cell for which the homogenized coefficient
+            is to be approximated
+
+        Returns:
+            np.ndarray: local stiffness matrix
+        """
+        local_dofs = self._V_macro.dofmap.cell_dofs(cell_index)
+        points = self._V_macro.tabulate_dof_coordinates()[local_dofs]
+        c_t = np.mean(points, axis=0)
+        # update the x value in the precompiled forms containing A
+        self._x_macro.value = c_t
+
+        for i, local_dof in enumerate(local_dofs):
+            self._v_macro.x.array[:] = 0.0
+            self._v_macro.x.array[local_dof] = 1.0
+            self._interpolate_macro_to_micro(
+                self._v_macro, self._grad_v_macro, cell_index, self._v_micros[i]
+            )
+            self._calculate_corrector(
+                cell_index,
+                self._correctors[i],
+            )
+
+        # local stiffness matrix
+        S_loc = self._assemble_local_stiffness_from_cell_problem()
+
+        # scale contribution
+        cell_area = _triangle_area(points)
+        Y_area = 1
+        return S_loc * cell_area / Y_area
+
+    def _interpolate_macro_to_micro(
+        self,
+        v_macro: fem.Function,
+        grad_v_macro_expr: fem.Expression,
+        cell_index: int,
+        v_micro: fem.Function = None,
+    ) -> fem.Function:
+        """Interpolates a function from the macro mesh onto the micro mesh.
+
+        Since we know that the micro domain is contained inside one macro cell,
+        we can avoid dolfinx interpolate_nonmatching and instead rely on evaluating directly.
+
+        Notes:
+            This function has the side aeffect of updating the constant self._grad_v_micro
+            that is used in the precompiled form for the cell problem.
+
+        Args:
+            v_macro: Macro function
+            grad_v_macro_expr: Expression for the gradient of the macroscopic function
+            cell_index: cell index on which the cell problem is solved
+            v_micro (optional): Micro function, if none is provided one is created
+
+        """
+        if v_micro is None:
+            v_micro = fem.Function(self._V_micro)
+        # v_micro.interpolate_nonmatching(v_macro, interpolation_cells, interpolation_data) # DOES NOT WORK IN PARALLEL
+        cells = np.full(self._points_micro.shape[0], cell_index, dtype=np.int32)
+        v_micro.x.array[:] = v_macro.eval(self._points_micro, cells=cells).flatten()
+
+        # update gradient constant in compiled form
+        self._grad_v_micro.value = grad_v_macro_expr.eval(self._msh, [cell_index]).flatten()
+        return v_micro
+
+    def _calculate_corrector(
+        self,
+        cell_index: int,
+        corrector: fem.Function = None,
+    ):
+        """Calculates the corrector by solving the cell problem.
+
+        Notes:
+            The micro function for which the corrector should be calculated does not show up,
+            since the precompiled form uses a contant that is updated in _interpolate_macro_to_micro.
+
+        Args:
+            cell_index: the process-local index of the cell
+                on which the cell problem should be solved
+            corrector (optional): function on the micro mesh that stores the corrector,
+                if none is provided one is created
+        """
+        if corrector is None:
+            corrector = fem.Function(self._V_micro)
+
+        problem = cell_problem.PeriodicLinearProblem(
+            self._a_micro_compiled,
+            self._L_micro_compiled,
+            self._mpc,
+            petsc_options=self._petsc_options_cell_problem,
+        )
+        v_tilde_sol = problem.solve()
+        if problem._solver.getConvergedReason() < 0:
+            self._logger.error(
+                f"Something went wrong in the cell problem solving for cell {cell_index}. PETSc solver failed with reason {problem._solver.getConvergedReason()}"
+            )
+        corrector.x.array[:] = v_tilde_sol.x.array
+        return corrector
+
     def _assemble_local_stiffness_from_cell_problem(
-        self, R
+        self,
     ) -> np.ndarray[tuple[int, int], np.dtype[float]]:
         r"""Calculates the contributions to the global stiffness matrix,
         based on the reconstruction operator applied to the basis functions of the macro mesh
