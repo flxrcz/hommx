@@ -114,14 +114,11 @@ class PoissonHMM:
         self._coeff = A
         self._f = f
         self._eps = eps
-        self._cell_mesh = helpers.rescale_mesh(
-            msh_micro
-        )  # create a copy of the mesh, since we modify it
+        self._cell_mesh = helpers.rescale_mesh(msh_micro)  # create a copy of the mesh, just in case
         self._V_macro = fem.functionspace(self._msh, ("Lagrange", 1))  # Macroscopic function space
-        self._u = ufl.TrialFunction(self._V_macro)
-        self._v = ufl.TestFunction(self._V_macro)
+        self._v_test = ufl.TestFunction(self._V_macro)
         self._x = ufl.SpatialCoordinate(self._msh)
-        L = ufl.inner(f(self._x), self._v) * ufl.dx
+        L = ufl.inner(f(self._x), self._v_test) * ufl.dx
         self._L = fem.form(L)
         self._b = create_vector(self._L)
         self._u = fem.Function(self._V_macro)
@@ -212,60 +209,70 @@ class PoissonHMM:
         points = self._V_macro.tabulate_dof_coordinates()[local_dofs]
         c_t = np.mean(points, axis=0)
 
-        # set up micro function space
-        v_micro_list = []
-        grad_v_micro_list = []
-
-        global_dofs = self._V_macro.dofmap.index_map.local_to_global(local_dofs)
-        for local_dof, global_dof in zip(local_dofs, global_dofs):
-            # set up macro basis function
-            # this only changes the local copy including potentially ghost nodes, so no communication is needed
+        for i, local_dof in enumerate(local_dofs):
             self._v_macro.x.array[:] = 0.0
             self._v_macro.x.array[local_dof] = 1.0
-
-            # interpolate basis function on micro space
-            v_micro = fem.Function(self._V_micro)
-            # v_micro.interpolate_nonmatching(v_macro, interpolation_cells, interpolation_data) # DOES NOT WORK IN PARALLEL
-            cells = np.full(self._points_micro.shape[0], cell_index, dtype=np.int32)
-            vals = self._v_macro.eval(self._points_micro, cells=cells)
-            vals = np.asarray(vals).flatten()
-
-            v_micro.x.array[:] = vals
-            v_micro_list.append(v_micro)
-
-            # evaluate gradient
-            grad_v_micro_list.append(self._grad_v_macro.eval(self._msh, [cell_index]).flatten())
-
-        # solve cell_problems
-        v_tilde_list = []  # correctors
-        # set x to cell center
-        self._x_macro.value = c_t
-        for i in range(NUM_BASIS_FUNCTIONS):
-            self._grad_v_micro.value = grad_v_micro_list[i]
-            problem = cell_problem.PeriodicLinearProblem(
-                self._a_micro_compiled,
-                self._L_micro_compiled,
-                self._mpc,
-                petsc_options=self._petsc_options_cell_problem,
+            self._apply_reconstruction_operator(
+                self._v_macro, self._grad_v_macro, cell_index, c_t, self._reconstruction_operator[i]
             )
-            v_tilde_sol = problem.solve()
-            if problem._solver.getConvergedReason() < 0:
-                self._logger.error(
-                    f"Something went wrong in the cell problem solving for cell {cell_index}. PETSc solver failed with reason {problem._solver.getConvergedReason()}"
-                )
-            v_tilde_list.append(v_tilde_sol)
 
-        # build reconstruction operator R_T
-        R = self._reconstruction_operator
-        for i in range(NUM_BASIS_FUNCTIONS):
-            R[i].x.array[:] = v_micro_list[i].x.array + v_tilde_list[i].x.array
         # local stiffness matrix
-        S_loc = self._assemble_local_stiffness_from_cell_problem(R)
+        S_loc = self._assemble_local_stiffness_from_cell_problem(self._reconstruction_operator)
 
         # scale contribution
         cell_area = _triangle_area(points)
         Y_area = 1
         return S_loc * cell_area / Y_area
+
+    def _apply_reconstruction_operator(
+        self,
+        v_macro: fem.Function,
+        grad_v_macro_expr: fem.Expression,
+        cell_index: int,
+        c_t: np.ndarray[tuple[int], np.dtype[float]],
+        R: fem.Function = None,
+    ):
+        """Applies the reconstruction operator on the micro mesh to a
+        function defined on the macro mesh.
+        This is done by first interpolating the macro function onto the micro domain
+        and then solving the cell problem.
+
+        Args:
+            v_macro: Function on the macro function space on which the reconstruction operator
+                should be applied, this is typically a basis function
+            grad_v_macro_expr: dolfinx expression that can calculate the gradient of v_macro
+            cell_index: the process-local index of the cell
+                on which the cell problem should be solved
+            c_t: center of that cell
+            R (optional): function on the micro mesh that stores the solution,
+                if none is provided one is created
+        """
+        if R is None:
+            R = fem.Function(self._V_micro)
+        v_micro = fem.Function(self._V_micro)
+        # v_micro.interpolate_nonmatching(v_macro, interpolation_cells, interpolation_data) # DOES NOT WORK IN PARALLEL
+        cells = np.full(self._points_micro.shape[0], cell_index, dtype=np.int32)
+        vals = v_macro.eval(self._points_micro, cells=cells)
+        vals = np.asarray(vals).flatten()
+
+        v_micro.x.array[:] = vals
+
+        # update gradient constant in compiled form
+        self._grad_v_micro.value = grad_v_macro_expr.eval(self._msh, [cell_index]).flatten()
+        self._x_macro.value = c_t
+        problem = cell_problem.PeriodicLinearProblem(
+            self._a_micro_compiled,
+            self._L_micro_compiled,
+            self._mpc,
+            petsc_options=self._petsc_options_cell_problem,
+        )
+        v_tilde_sol = problem.solve()
+        if problem._solver.getConvergedReason() < 0:
+            self._logger.error(
+                f"Something went wrong in the cell problem solving for cell {cell_index}. PETSc solver failed with reason {problem._solver.getConvergedReason()}"
+            )
+        R.x.array[:] = v_micro.x.array + v_tilde_sol.x.array
+        return R
 
     def _setup_cell_problem(self) -> None:
         """Set up variables, function spaces and boundary conditions that are used throughout all cell problems."""
@@ -298,6 +305,19 @@ class PoissonHMM:
         self._reconstruction_operator = [
             fem.Function(self._V_micro) for i in range(NUM_BASIS_FUNCTIONS)
         ]
+        self._local_stiffness_forms = [
+            [
+                fem.form(
+                    ufl.inner(
+                        self._A_micro * ufl.grad(self._reconstruction_operator[i]),
+                        ufl.grad(self._reconstruction_operator[j]),
+                    )
+                    * ufl.dx
+                )
+                for i in range(3)
+            ]
+            for j in range(3)
+        ]
 
     def _assemble_local_stiffness_from_cell_problem(
         self, R
@@ -313,9 +333,7 @@ class PoissonHMM:
         S_loc = np.zeros((NUM_BASIS_FUNCTIONS, NUM_BASIS_FUNCTIONS))
         for i in range(S_loc.shape[0]):
             for j in range(S_loc.shape[1]):
-                S_loc[i, j] = fem.assemble_scalar(
-                    fem.form(ufl.inner(self._A_micro * ufl.grad(R[i]), ufl.grad(R[j])) * ufl.dx)
-                )
+                S_loc[i, j] = fem.assemble_scalar(self._local_stiffness_forms[i][j])
         return S_loc
 
     def solve(self) -> fem.Function:
@@ -374,6 +392,7 @@ class PoissonHMM:
         plotter.add_mesh(grid, show_edges=True)
         warped = grid.warp_by_scalar()
         plotter.add_mesh(warped)
+
         plotter.show()
 
 
