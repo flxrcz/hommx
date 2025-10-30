@@ -234,7 +234,7 @@ class PoissonHMM:
         # setup of macro functions once for all cell problems
         self._v_macro = fem.Function(self._V_macro)
         self._grad_v_macro = fem.Expression(ufl.grad(self._v_macro), REFERENCE_EVALUATION_POINT)
-        # setup of placeholder functions for the reconstruction operator
+        # setup of placeholder functions for the micro functions
         self._v_micros = [fem.Function(self._V_micro) for _ in range(NUM_BASIS_FUNCTIONS)]
         # placeholders for the correctors
         self._correctors = [fem.Function(self._V_micro) for _ in range(NUM_BASIS_FUNCTIONS)]
@@ -285,7 +285,10 @@ class PoissonHMM:
             )
 
         # local stiffness matrix
-        S_loc = self._assemble_local_stiffness_from_cell_problem()
+        S_loc = np.zeros((NUM_BASIS_FUNCTIONS, NUM_BASIS_FUNCTIONS))
+        for i in range(S_loc.shape[0]):
+            for j in range(S_loc.shape[1]):
+                S_loc[i, j] = fem.assemble_scalar(self._local_stiffness_forms[i][j])
 
         # scale contribution
         cell_area = _triangle_area(points)
@@ -358,23 +361,6 @@ class PoissonHMM:
             )
         corrector.x.array[:] = v_tilde_sol.x.array
         return corrector
-
-    def _assemble_local_stiffness_from_cell_problem(
-        self,
-    ) -> np.ndarray[tuple[int, int], np.dtype[float]]:
-        r"""Calculates the contributions to the global stiffness matrix,
-        based on the reconstruction operator applied to the basis functions of the macro mesh
-
-        $$
-        S_{i,j } = \int_{Y_\varepsilon(c_T)} A(c_T, \frac{x}{\varepsilon}) \nabla R_{T, h}(v_{h, i})\cdot \nabla R_{T, h}(w_{h, j}) dx,
-        $$
-
-        """
-        S_loc = np.zeros((NUM_BASIS_FUNCTIONS, NUM_BASIS_FUNCTIONS))
-        for i in range(S_loc.shape[0]):
-            for j in range(S_loc.shape[1]):
-                S_loc[i, j] = fem.assemble_scalar(self._local_stiffness_forms[i][j])
-        return S_loc
 
     def solve(self) -> fem.Function:
         """Assemble the LHS, RHS and solve the problem
