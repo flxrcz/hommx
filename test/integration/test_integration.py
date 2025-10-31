@@ -13,6 +13,11 @@ def mesh_sizes():
 
 
 @pytest.fixture
+def atol():
+    return 5e-5
+
+
+@pytest.fixture
 def eps(mesh_sizes):
     discretization = 1 / min(mesh_sizes)
     return 0.1 * discretization
@@ -28,7 +33,7 @@ def micro_mesh(mesh_sizes):
     return mesh.create_unit_square(MPI.COMM_SELF, *mesh_sizes)
 
 
-def test_analytical_example_1(micro_mesh, macro_mesh, eps):
+def test_analytical_example_1(micro_mesh, macro_mesh, eps, atol):
     """Stolen from Felix Krumbiegels HMM code"""
 
     def A(x, y):
@@ -48,10 +53,10 @@ def test_analytical_example_1(micro_mesh, macro_mesh, eps):
     L2_error = fem.assemble_scalar(
         fem.form(ufl.inner(phmm_solution - u_exact, phmm_solution - u_exact) * ufl.dx)
     )
-    assert np.isclose(L2_error, 0, atol=1e-4), f"L^2 error to big {L2_error=}"
+    assert np.isclose(L2_error, 0, atol=atol), f"L^2 error to big {L2_error=}"
 
 
-def test_analytical_example_2(micro_mesh, macro_mesh, eps):
+def test_analytical_example_2(micro_mesh, macro_mesh, eps, atol):
     """Stolen from Felix Krumbiegels HMM code"""
 
     def A(x, y):
@@ -88,4 +93,4 @@ def test_analytical_example_2(micro_mesh, macro_mesh, eps):
     L2_error = fem.assemble_scalar(
         fem.form(ufl.inner(phmm_solution - u_exact, phmm_solution - u_exact) * ufl.dx)
     )
-    assert np.isclose(L2_error, 0, atol=1e-4), f"L^2 error to big {L2_error=}"
+    assert np.isclose(L2_error, 0, atol=atol), f"L^2 error to big {L2_error=}"
