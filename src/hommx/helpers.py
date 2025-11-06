@@ -7,15 +7,19 @@ functions:
     create_periodic_boundary_conditions: creates periodic boundary conditions on a 2D box mesh.
 """
 
+from collections.abc import Callable
+
 import basix.ufl
 import dolfinx
 import numpy as np
 import pyvista
+import pyvista as pv
 import ufl
 from dolfinx import fem, mesh, plot
 from dolfinx.fem.petsc import LinearProblem
 from dolfinx_mpc import MultiPointConstraint
 from mpi4py import MPI
+from petsc4py import PETSc
 from petsc4py.PETSc import ScalarType
 from ufl import dx, grad, inner
 
@@ -311,3 +315,94 @@ def create_periodic_boundary_conditions(
     )
     mpc.finalize()
     return mpc
+
+
+class PoissonFEM:
+    r"""solves the poisson equation"""
+
+    def __init__(
+        self,
+        msh: mesh.Mesh,
+        A: Callable[[ufl.SpatialCoordinate], ufl.Form],
+        f: ufl.form,
+    ):
+        r"""Initializes the solver, meshes and boundary condtions.
+
+        Args:
+            msh: The macro mesh, on which we want to solve the oscillatory Poisson equation.
+                This mesh can live on MPI.COMM_WORLD and the cell problems are automatically solved
+                on each process in parallel.
+            A: The coefficient, it should be callable like: `A(x)(y)`,
+                where $x$ is a spatial coordinate on the macro mesh (the cell center $c_T$)
+                and $y$ is a ufl.SpatialCoordinate on the microscopic mesh,
+                that is passed to dolfinx to solve the cell problem.
+                A needs to be 1-periodic in y, at least for the theory to work.
+            f: The right hand side of the Poisson problem.
+            msh_micro (mesh.Mesh): The microscopic mesh, this needs to be the unit-square.
+                Further it needs to live on MPI.COMM_SELF, since every process owns a whole copy
+                of the microscopic mesh. If any other communicator but MPI.COMM_SELF is used the
+                results will most likely be rubish.
+            eps: $\varepsilon$, the microscopic scaling. Note that this needs to be small enough,
+                so that the cells live entirely within their corresponding element.
+                If this is not the case, results may be rubish.
+            petsc_options_global_solve (optional): PETSc solver options for the global solver, see
+            PETSC documentation.
+            petsc_options_cell_problem (optional): PETSc solver options for the global solver, see
+            PETSC documentation.
+            petsc_options_prefix (optional): options prefix used for PETSc options. Defaults to "hommx_PoissonHMM".
+        """
+        self._msh = msh
+        self._comm = msh.comm
+        self._coeff = A
+        self._f = f
+        self._V = fem.functionspace(self._msh, ("Lagrange", 1))  # Macroscopic function space
+        self._v_test = ufl.TestFunction(self._V)
+        self._u_trial = ufl.TrialFunction(self._V)
+        self._x = ufl.SpatialCoordinate(self._msh)
+        lhs = ufl.inner(A(self._x) * ufl.grad(self._u_trial), ufl.grad(self._v_test)) * ufl.dx
+        rhs = ufl.inner(f(self._x), self._v_test) * ufl.dx
+        left = np.min(msh.geometry.x[:, 0])
+        right = np.max(msh.geometry.x[:, 0])
+        bottom = np.min(msh.geometry.x[:, 1])
+        top = np.max(msh.geometry.x[:, 1])
+        facets = mesh.locate_entities_boundary(
+            msh,
+            dim=(msh.topology.dim - 1),
+            marker=lambda x: np.isclose(x[0], left)
+            | np.isclose(x[0], right)
+            | np.isclose(x[1], bottom)
+            | np.isclose(x[1], top),
+        )
+        dofs = fem.locate_dofs_topological(self._V, entity_dim=1, entities=facets)
+        bc = fem.dirichletbc(value=PETSc.ScalarType(0), dofs=dofs, V=self._V)
+        self._bcs = [bc]
+        self._lp = LinearProblem(lhs, rhs, self._bcs)
+
+    def solve(self) -> fem.Function:
+        """Assemble the LHS, RHS and solve the problem
+
+        This method assembles the HMM stiffness matrix, so depending on the problem it might
+        run for some time.
+        """
+        self._u = self._lp.solve()
+        return self._u
+
+    def plot_solution(self, u: fem.Function | None = None):
+        """Simple plot of the solution using pyvista.
+
+        Solve needs to be run before calling this.
+        On parallel methods each process only plots the local part.
+
+        """
+        if u is None:
+            u = self._u
+        cells, types, x = plot.vtk_mesh(self._V)
+        grid = pv.UnstructuredGrid(cells, types, x)
+        grid.point_data["u"] = u.x.array
+        grid.set_active_scalars("u")
+        plotter = pv.Plotter(notebook=True)
+        plotter.add_mesh(grid, show_edges=True)
+        warped = grid.warp_by_scalar()
+        plotter.add_mesh(warped)
+
+        plotter.show()
