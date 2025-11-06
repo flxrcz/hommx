@@ -125,13 +125,17 @@ class PoissonHMM:
         self._x = la.create_petsc_vector_wrap(self._u.x)
 
         # Dirichlet BC
+        left = np.min(self._msh.geometry.x[:, 0])
+        right = np.max(self._msh.geometry.x[:, 0])
+        bottom = np.min(self._msh.geometry.x[:, 1])
+        top = np.max(self._msh.geometry.x[:, 1])
         facets = mesh.locate_entities_boundary(
             self._msh,
             dim=(self._msh.topology.dim - 1),
-            marker=lambda x: np.isclose(x[0], 0.0)
-            | np.isclose(x[0], 1.0)
-            | np.isclose(x[1], 0.0)
-            | np.isclose(x[1], 1.0),
+            marker=lambda x: np.isclose(x[0], left)
+            | np.isclose(x[0], right)
+            | np.isclose(x[1], bottom)
+            | np.isclose(x[1], top),
         )
         dofs = fem.locate_dofs_topological(self._V_macro, entity_dim=1, entities=facets)
         bc = fem.dirichletbc(value=PETSc.ScalarType(0), dofs=dofs, V=self._V_macro)
@@ -403,16 +407,18 @@ class PoissonHMM:
         self._u.x.scatter_forward()  # make sure ghosts are updated so plotting works correctly
         return self._u
 
-    def plot_solution(self):
+    def plot_solution(self, u: fem.Function | None = None):
         """Simple plot of the solution using pyvista.
 
         Solve needs to be run before calling this.
         On parallel methods each process only plots the local part.
 
         """
+        if u is None:
+            u = self._u
         cells, types, x = plot.vtk_mesh(self._V_macro)
         grid = pv.UnstructuredGrid(cells, types, x)
-        grid.point_data["u"] = self._u.x.array
+        grid.point_data["u"] = u.x.array
         grid.set_active_scalars("u")
         plotter = pv.Plotter(notebook=True)
         plotter.add_mesh(grid, show_edges=True)
@@ -420,6 +426,150 @@ class PoissonHMM:
         plotter.add_mesh(warped)
 
         plotter.show()
+
+
+class PoissonSemiHMM(PoissonHMM):
+    r"""Solver for the Multi-Scale Poisson problem using the HMM.
+
+    This class implements the Heterogenous-Multi-Scale Method for a Poisson problem.
+    We want to solve the weak formulation of the Poisson problem:
+
+    $$
+        \int_\Omega (A\nabla u) \cdot \nabla v dx = \int_\Omega fv dx
+    $$
+
+    With Dirichlet-Boundary Conditions $u=0$ on $\partial\Omega$.
+
+    We do this by approximating the homogenized coefficient on every cell and
+    using the adapted bilinear form
+
+    $$
+    a_H(v_H, w_H) = \sum_{T\in \mathcal T_H} \frac{|T|}{|Y_\varepsilon(c_T)|} \int_{Y_\varepsilon(c_T)} A(c_T, \frac{x}{\varepsilon}) \nabla R_{T, h}(v_h)\cdot \nabla R_{T, h}(w_h) dx,
+    $$
+
+    where $\nabla R_{T, h} = v_H|_{Y_\varepsilon(c_T)} + D\theta(x)\tilde{v_h}, \tilde{v_h}\in V_{h, \#}(Y_\varepsilon(c_T))$ is the reconstruction operator,
+    where $\tilde{v_h}$ is the solution to
+
+    $$
+    \int_{Y_\varepsilon(c_T)} A(c_T, \frac{x}{\varepsilon}) D\theta(x)\nabla\tilde{v_h} \cdot D\theta(x)\nabla z_h dx = - \int_{Y_\varepsilon(c_T)} A(c_T, \frac{x}{\varepsilon}) \nabla v_H \cdot D\theta(x)\nabla z_h dx
+    $$
+
+    note that the gradient of the macro-scale function $v_H$ appears on the RHS.
+
+    $Y_\varepsilon(c_T) = c_T + [-\varepsilon/2, \varepsilon]^d$ is the micro mesh cell.
+
+    Parallelization:
+    The code can in theory run in parallel.
+    If you run the code in serial, the setup of the meshes can be arbitrary.
+    If you want to run the code in parallel, it is only supported for now that the micro mesh lives
+    on MPI.COMM_SELF. Parallelization is done by each process solving the cell problems for it's local
+    part.
+    Passing a mesh that lives on anything but MPI.COMM_SELF to the msh_micro parameter can lead to
+    unexpected behaviour.
+
+
+    Notes:
+        - For now only zero-Dirichlet Boundary Conditions are implemented.
+        - It is the users responsibility to ensure that the micro meshes fit into the macro mesh cells.
+        I.e. the shifted and scaled versions of $Y$ $Y_\varepsilon(c_T)$ need to fit within the element $T$.
+        Otherwise the interpolation of the macro scale basis functions to the micro scale may lead to
+        unexpected behaviour.
+    """
+
+    def __init__(
+        self,
+        msh: mesh.Mesh,
+        A: Callable[[fem.Constant, ufl.SpatialCoordinate], ufl.Form],
+        f: ufl.form,
+        msh_micro: mesh.Mesh,
+        eps: float,
+        Dtheta: Callable[[fem.Constant], ufl.Form],
+        petsc_options_global_solve: dict | None = None,
+        petsc_options_cell_problem: dict | None = None,
+        petsc_options_prefix: str = "hommx_PoissonHMM",
+    ):
+        super().__init__(
+            msh,
+            A,
+            f,
+            msh_micro,
+            eps,
+            petsc_options_global_solve,
+            petsc_options_cell_problem,
+            petsc_options_prefix,
+        )
+        self._Dtheta = Dtheta
+
+    def _setup_cell_problems(self) -> None:
+        """Set up various structures used throughout all cell problems.
+
+        Since all ufl forms are precompiled the mathematical description of the cell problem
+        and stiffness assembly are in this function.
+        If you want to adapt the HMM to your problem, you can simply overwrite this method and
+        change the ufl forms.
+
+        Notes:
+            This method sets up objects that are used through the cell problems:
+            - function spaces and functions on the cell mesh
+            - periodic boundary conditions
+            - ufl forms containg the cell problem and local stiffness assembly
+                - corresponding constants
+        """
+        # micro function space and periodic boundary conditions
+        self._V_micro = fem.functionspace(self._cell_mesh, ("Lagrange", 1))
+        self._mpc = helpers.create_periodic_boundary_conditions(
+            self._cell_mesh, self._V_micro, self._bcs
+        )
+        self._points_micro = self._V_micro.tabulate_dof_coordinates()
+        self._v_tilde = ufl.TrialFunction(self._V_micro)
+        self._z = ufl.TestFunction(self._V_micro)
+        self._y = ufl.SpatialCoordinate(self._cell_mesh)
+        self._grad_v_micro = fem.Constant(self._cell_mesh, np.zeros((2,)))
+        # wrap x in A(x, y) in a Constant to avoid recompilation
+        self._x_macro = fem.Constant(
+            self._cell_mesh, np.zeros((self._cell_mesh.geometry.x.shape[1],))
+        )
+        self._A_micro = self._coeff(self._x_macro, self._y)
+        self._Dthetax = self._Dtheta(self._x_macro)
+        # precompile cell problem LHS and RHS
+        self._a_micro_compiled = fem.form(
+            ufl.inner(
+                self._A_micro * self._Dthetax * ufl.grad(self._v_tilde),
+                self._Dthetax * ufl.grad(self._z),
+            )
+            * ufl.dx
+        )
+        self._L_micro_compiled = fem.form(
+            -ufl.inner(self._A_micro * self._grad_v_micro, self._Dthetax * ufl.grad(self._z))
+            * ufl.dx
+        )
+        # setup of macro functions once for all cell problems
+        self._v_macro = fem.Function(self._V_macro)
+        self._grad_v_macro = fem.Expression(ufl.grad(self._v_macro), REFERENCE_EVALUATION_POINT)
+        # setup of placeholder functions for the micro functions
+        self._v_micros = [fem.Function(self._V_micro) for _ in range(NUM_BASIS_FUNCTIONS)]
+        # placeholders for the correctors
+        self._correctors = [fem.Function(self._V_micro) for _ in range(NUM_BASIS_FUNCTIONS)]
+        self._local_stiffness_forms = [
+            [
+                fem.form(
+                    ufl.inner(
+                        self._A_micro
+                        * (
+                            ufl.grad(self._v_micros[i])
+                            + self._Dthetax * ufl.grad(self._correctors[i])
+                        ),
+                        (
+                            ufl.grad(self._v_micros[j])
+                            + self._Dthetax * ufl.grad(self._correctors[j])
+                        ),
+                    )
+                    * ufl.dx
+                )
+                for i in range(NUM_BASIS_FUNCTIONS)
+            ]
+            for j in range(NUM_BASIS_FUNCTIONS)
+        ]
 
 
 def _triangle_area(points):
