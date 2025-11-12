@@ -10,6 +10,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-5_kmp_llvm.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/_python_abi3_support-1.0-hd8ed1ab_2.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/adios2-2.10.2-mpi_mpich_py313hfe862c0_13.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/adios4dolfinx-0.9.5-pyh458ca06_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/asttokens-3.0.0-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/attr-2.5.2-h39aace5_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/babel-2.17.0-pyhd8ed1ab_0.conda
@@ -572,6 +573,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-5_kmp_llvm.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/_python_abi3_support-1.0-hd8ed1ab_2.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/adios2-2.10.2-mpi_mpich_py313hfe862c0_13.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/adios4dolfinx-0.9.5-pyh458ca06_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/asttokens-3.0.0-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/attr-2.5.2-h39aace5_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/babel-2.17.0-pyhd8ed1ab_0.conda
@@ -855,6 +857,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-5_kmp_llvm.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/_python_abi3_support-1.0-hd8ed1ab_2.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/adios2-2.10.2-mpi_mpich_py313hfe862c0_13.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/adios4dolfinx-0.9.5-pyh458ca06_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/asttokens-3.0.0-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/attr-2.5.2-h39aace5_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/babel-2.17.0-pyhd8ed1ab_0.conda
@@ -1155,6 +1158,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-5_kmp_llvm.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/_python_abi3_support-1.0-hd8ed1ab_2.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/adios2-2.10.2-mpi_mpich_py313hfe862c0_13.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/adios4dolfinx-0.9.5-pyh458ca06_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/asttokens-3.0.0-pyhd8ed1ab_1.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/attr-2.5.2-h39aace5_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/babel-2.17.0-pyhd8ed1ab_0.conda
@@ -1472,6 +1476,21 @@ packages:
   purls: []
   size: 798457
   timestamp: 1761252986150
+- conda: https://conda.anaconda.org/conda-forge/noarch/adios4dolfinx-0.9.5-pyh458ca06_0.conda
+  sha256: 3b7ed8c4d7f983f7b7404c37283889b51c89b05aa09cd485db11b399fdb822b9
+  md5: 232eed394b9bc667c1f7ac432204d44a
+  depends:
+  - adios2 >=2.10.2 mpi_*
+  - fenics-dolfinx 0.9.*
+  - mpi4py
+  - numpy >=1.21
+  - python >=3.10
+  license: MIT
+  license_family: MIT
+  purls:
+  - pkg:pypi/adios4dolfinx?source=hash-mapping
+  size: 42380
+  timestamp: 1759762026457
 - pypi: https://files.pythonhosted.org/packages/0f/15/5bf3b99495fb160b63f95972b81750f18f7f4e02ad051373b669d17d44f2/aiohappyeyeballs-2.6.1-py3-none-any.whl
   name: aiohappyeyeballs
   version: 2.6.1
@@ -2337,7 +2356,7 @@ packages:
 - pypi: ./
   name: hommx
   version: 0.0.1
-  sha256: 2a904f1c5ee9d760593f959885cfa1ab662304912a23f76dcbebb4e4be646ba1
+  sha256: ef11d73413d4929772e5384030738c370763a10c3166c23cf5decb2e0256a3cd
   requires_dist:
   - pyvista[jupyter]==0.46.3
   - trame-server==3.6.3
