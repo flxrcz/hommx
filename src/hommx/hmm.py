@@ -215,9 +215,7 @@ class PoissonHMM:
         """
         # micro function space and periodic boundary conditions
         self._V_micro = fem.functionspace(self._cell_mesh, ("Lagrange", 1))
-        self._mpc = helpers.create_periodic_boundary_conditions(
-            self._cell_mesh, self._V_micro, self._bcs
-        )
+        self._mpc = helpers.create_periodic_boundary_conditions(self._V_micro, self._bcs)
         self._points_micro = self._V_micro.tabulate_dof_coordinates()
         self._v_tilde = ufl.TrialFunction(self._V_micro)
         self._z = ufl.TestFunction(self._V_micro)
@@ -517,9 +515,7 @@ class PoissonSemiHMM(PoissonHMM):
         """
         # micro function space and periodic boundary conditions
         self._V_micro = fem.functionspace(self._cell_mesh, ("Lagrange", 1))
-        self._mpc = helpers.create_periodic_boundary_conditions(
-            self._cell_mesh, self._V_micro, self._bcs
-        )
+        self._mpc = helpers.create_periodic_boundary_conditions(self._V_micro, self._bcs)
         self._points_micro = self._V_micro.tabulate_dof_coordinates()
         self._v_tilde = ufl.TrialFunction(self._V_micro)
         self._z = ufl.TestFunction(self._V_micro)

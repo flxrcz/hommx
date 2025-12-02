@@ -66,6 +66,7 @@ class PeriodicLinearProblem(dolfinx_mpc.LinearProblem):
         nullspace_vector.setValues(self._mpc.slaves, np.zeros_like(self._mpc.slaves))
         nullspace_vector.assemble()
         nullspace = PETSc.NullSpace().create(vectors=(nullspace_vector,), comm=comm)
+        # self._A.setOption(PETSc.Mat.Option.SYMMETRIC, True)
         self._A.setNullSpace(nullspace)
         self._solver.setOperators(self._A)
         nullspace.remove(self._b)
