@@ -19,8 +19,8 @@ from tqdm import tqdm
 import hommx.cell_problem as cell_problem
 import hommx.helpers as helpers
 
-REFERENCE_EVALUATION_POINT = np.array([[1 / 3, 1 / 3]])
-NUM_BASIS_FUNCTIONS = 3  # number of basis functions on one element
+REFERENCE_EVALUATION_POINT_3D = np.array([[1 / 3, 1 / 3, 1 / 3]])
+REFERENCE_EVALUATION_POINT_2D = np.array([[1 / 3, 1 / 3]])
 
 
 class PoissonHMM:
@@ -114,7 +114,7 @@ class PoissonHMM:
         self._coeff = A
         self._f = f
         self._eps = eps
-        self._cell_mesh = helpers.rescale_mesh(msh_micro)  # create a copy of the mesh, just in case
+        self._cell_mesh = msh_micro  # create a copy of the mesh, just in case
         self._V_macro = fem.functionspace(self._msh, ("Lagrange", 1))  # Macroscopic function space
         self._v_test = ufl.TestFunction(self._V_macro)
         self._x = ufl.SpatialCoordinate(self._msh)
@@ -124,20 +124,59 @@ class PoissonHMM:
         self._u = fem.Function(self._V_macro)
         self._x = la.create_petsc_vector_wrap(self._u.x)
 
-        # Dirichlet BC
-        left = np.min(self._msh.geometry.x[:, 0])
-        right = np.max(self._msh.geometry.x[:, 0])
-        bottom = np.min(self._msh.geometry.x[:, 1])
-        top = np.max(self._msh.geometry.x[:, 1])
-        facets = mesh.locate_entities_boundary(
-            self._msh,
-            dim=(self._msh.topology.dim - 1),
-            marker=lambda x: np.isclose(x[0], left)
-            | np.isclose(x[0], right)
-            | np.isclose(x[1], bottom)
-            | np.isclose(x[1], top),
+        # setup 2D vs 3D differences
+        self._tdim = self._msh.topology.dim
+        if self._tdim not in (2, 3):
+            raise ValueError("Topology should be 3D or 2D")
+        if self._tdim != self._msh.geometry.dim:
+            raise ValueError(
+                "Topologocial dimension is different from geometrical dimension. Currently surfaces in 3D are not supported."
+            )
+
+        self._num_basis_functions = (
+            self._tdim + 1
+        )  # 3 basis functions for triangles, 4 for tetrahedra
+        if self._tdim == 3:
+            # Dirichlet BC
+            left = np.min(self._msh.geometry.x[:, 0])
+            right = np.max(self._msh.geometry.x[:, 0])
+            bottom = np.min(self._msh.geometry.x[:, 1])
+            top = np.max(self._msh.geometry.x[:, 1])
+            back = np.min(self._msh.geometry.x[:, 2])
+            front = np.max(self._msh.geometry.x[:, 2])
+            facets = mesh.locate_entities_boundary(
+                self._msh,
+                dim=(self._msh.topology.dim - 1),
+                marker=lambda x: np.isclose(x[0], left)
+                | np.isclose(x[0], right)
+                | np.isclose(x[1], bottom)
+                | np.isclose(x[1], top)
+                | np.isclose(x[2], back)
+                | np.isclose(x[2], front),
+            )
+            self._reference_evaluation_point = REFERENCE_EVALUATION_POINT_3D
+            self._volume_function = _tetrahedron_volume
+
+        if self._tdim == 2:
+            # Dirichlet BC
+            left = np.min(self._msh.geometry.x[:, 0])
+            right = np.max(self._msh.geometry.x[:, 0])
+            bottom = np.min(self._msh.geometry.x[:, 1])
+            top = np.max(self._msh.geometry.x[:, 1])
+            facets = mesh.locate_entities_boundary(
+                self._msh,
+                dim=(self._msh.topology.dim - 1),
+                marker=lambda x: np.isclose(x[0], left)
+                | np.isclose(x[0], right)
+                | np.isclose(x[1], bottom)
+                | np.isclose(x[1], top),
+            )
+            self._reference_evaluation_point = REFERENCE_EVALUATION_POINT_2D
+            self._volume_function = _triangle_area
+
+        dofs = fem.locate_dofs_topological(
+            self._V_macro, entity_dim=(self._msh.topology.dim - 1), entities=facets
         )
-        dofs = fem.locate_dofs_topological(self._V_macro, entity_dim=1, entities=facets)
         bc = fem.dirichletbc(value=PETSc.ScalarType(0), dofs=dofs, V=self._V_macro)
         self._bcs = [bc]
         self._num_dofs = self._V_macro.dofmap.index_map.size_global
@@ -171,7 +210,7 @@ class PoissonHMM:
             return
 
         self._setup_cell_problems()
-        num_local_cells = self._V_macro.mesh.topology.index_map(2).size_local
+        num_local_cells = self._V_macro.mesh.topology.index_map(self._tdim).size_local
 
         # cell problem loop
         for local_cell_index in tqdm(range(num_local_cells)):
@@ -220,7 +259,7 @@ class PoissonHMM:
         self._v_tilde = ufl.TrialFunction(self._V_micro)
         self._z = ufl.TestFunction(self._V_micro)
         self._y = ufl.SpatialCoordinate(self._cell_mesh)
-        self._grad_v_micro = fem.Constant(self._cell_mesh, np.zeros((2,)))
+        self._grad_v_micro = fem.Constant(self._cell_mesh, np.zeros((self._tdim,)))
         # wrap x in A(x, y) in a Constant to avoid recompilation
         self._x_macro = fem.Constant(
             self._cell_mesh, np.zeros((self._cell_mesh.geometry.x.shape[1],))
@@ -235,11 +274,13 @@ class PoissonHMM:
         )
         # setup of macro functions once for all cell problems
         self._v_macro = fem.Function(self._V_macro)
-        self._grad_v_macro = fem.Expression(ufl.grad(self._v_macro), REFERENCE_EVALUATION_POINT)
+        self._grad_v_macro = fem.Expression(
+            ufl.grad(self._v_macro), self._reference_evaluation_point
+        )
         # setup of placeholder functions for the micro functions
-        self._v_micros = [fem.Function(self._V_micro) for _ in range(NUM_BASIS_FUNCTIONS)]
+        self._v_micros = [fem.Function(self._V_micro) for _ in range(self._num_basis_functions)]
         # placeholders for the correctors
-        self._correctors = [fem.Function(self._V_micro) for _ in range(NUM_BASIS_FUNCTIONS)]
+        self._correctors = [fem.Function(self._V_micro) for _ in range(self._num_basis_functions)]
         self._local_stiffness_forms = [
             [
                 fem.form(
@@ -250,9 +291,9 @@ class PoissonHMM:
                     )
                     * ufl.dx
                 )
-                for i in range(NUM_BASIS_FUNCTIONS)
+                for i in range(self._num_basis_functions)
             ]
-            for j in range(NUM_BASIS_FUNCTIONS)
+            for j in range(self._num_basis_functions)
         ]
 
     def _compute_local_stiffness(
@@ -287,13 +328,13 @@ class PoissonHMM:
             )
 
         # local stiffness matrix
-        S_loc = np.zeros((NUM_BASIS_FUNCTIONS, NUM_BASIS_FUNCTIONS))
+        S_loc = np.zeros((self._num_basis_functions, self._num_basis_functions))
         for i in range(S_loc.shape[0]):
             for j in range(S_loc.shape[1]):
                 S_loc[i, j] = fem.assemble_scalar(self._local_stiffness_forms[i][j])
 
         # scale contribution
-        cell_area = _triangle_area(points)
+        cell_area = self._volume_function(points)
         Y_area = 1
         return S_loc * cell_area / Y_area
 
@@ -541,11 +582,13 @@ class PoissonSemiHMM(PoissonHMM):
         )
         # setup of macro functions once for all cell problems
         self._v_macro = fem.Function(self._V_macro)
-        self._grad_v_macro = fem.Expression(ufl.grad(self._v_macro), REFERENCE_EVALUATION_POINT)
+        self._grad_v_macro = fem.Expression(
+            ufl.grad(self._v_macro), self._reference_evaluation_point
+        )
         # setup of placeholder functions for the micro functions
-        self._v_micros = [fem.Function(self._V_micro) for _ in range(NUM_BASIS_FUNCTIONS)]
+        self._v_micros = [fem.Function(self._V_micro) for _ in range(self._num_basis_functions)]
         # placeholders for the correctors
-        self._correctors = [fem.Function(self._V_micro) for _ in range(NUM_BASIS_FUNCTIONS)]
+        self._correctors = [fem.Function(self._V_micro) for _ in range(self._num_basis_functions)]
         self._local_stiffness_forms = [
             [
                 fem.form(
@@ -562,11 +605,18 @@ class PoissonSemiHMM(PoissonHMM):
                     )
                     * ufl.dx
                 )
-                for i in range(NUM_BASIS_FUNCTIONS)
+                for i in range(self._num_basis_functions)
             ]
-            for j in range(NUM_BASIS_FUNCTIONS)
+            for j in range(self._num_basis_functions)
         ]
 
 
 def _triangle_area(points):
     return 0.5 * np.linalg.norm(np.cross(points[1] - points[0], points[2] - points[0]))
+
+
+def _tetrahedron_volume(points):
+    return (
+        np.abs(np.linalg.det([points[1] - points[0], points[2] - points[0], points[3] - points[0]]))
+        / 6.0
+    )
