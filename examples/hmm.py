@@ -14,12 +14,13 @@ eps = 1 / 2**5
 
 def A(x, y):
     return 1.1 + x[0] + ufl.sin(2 * ufl.pi * y[0])
+    # return ufl.conditional(x[0] > 0.5, 10, 1)
     # return ufl.conditional(ufl.sin(2*ufl.pi*y[0]) > 0, 10, 1)
     # return 5
 
 
 def f(x):
-    return 1
+    return fem.Constant(x.ufl_domain(), PETSc.ScalarType(0))
 
 
 COMM = MPI.COMM_WORLD
@@ -32,6 +33,32 @@ ny = N
 msh = mesh.create_rectangle(COMM, np.array([[0, 0], [5, 5]]), [nx, nx])
 msh2 = mesh.create_unit_square(COMM, nx, nx)
 phmm = PoissonHMM(msh, A, f, msh2, eps, petsc_options_cell_problem={"ksp_atol": 1e-9})
+left = np.min(msh.geometry.x[:, 0])
+right = np.max(msh.geometry.x[:, 0])
+bottom = np.min(msh.geometry.x[:, 1])
+top = np.max(msh.geometry.x[:, 1])
+facets_left = mesh.locate_entities_boundary(
+    msh,
+    dim=(msh.topology.dim - 1),
+    marker=lambda x: np.isclose(x[0], left),
+)
+facets_right = mesh.locate_entities_boundary(
+    msh,
+    dim=(msh.topology.dim - 1),
+    marker=lambda x: np.isclose(x[0], right),
+)
+dofs_left = fem.locate_dofs_topological(
+    phmm.function_space, entity_dim=(msh.topology.dim - 1), entities=facets_left
+)
+bc_left = fem.dirichletbc(value=PETSc.ScalarType(1), dofs=dofs_left, V=phmm.function_space)
+
+dofs_right = fem.locate_dofs_topological(
+    phmm.function_space, entity_dim=(msh.topology.dim - 1), entities=facets_right
+)
+bc_right = fem.dirichletbc(value=PETSc.ScalarType(0), dofs=dofs_right, V=phmm.function_space)
+
+phmm.set_boundary_condtions([bc_left, bc_right])
+
 
 print(msh.topology.index_map(2).size_global)
 print(msh.topology.index_map(0).size_global)
@@ -42,7 +69,7 @@ def A_fem(x):
     return A(x, x / eps)
 
 
-N = 2**10
+N = 2**7
 nx = N
 ny = N
 # msh = mesh.create_unit_square(MPI.COMM_WORLD, nx, nx)
@@ -57,17 +84,26 @@ left = np.min(msh.geometry.x[:, 0])
 right = np.max(msh.geometry.x[:, 0])
 bottom = np.min(msh.geometry.x[:, 1])
 top = np.max(msh.geometry.x[:, 1])
-facets = mesh.locate_entities_boundary(
+facets_left = mesh.locate_entities_boundary(
     msh,
     dim=(msh.topology.dim - 1),
-    marker=lambda x: np.isclose(x[0], left)
-    | np.isclose(x[0], right)
-    | np.isclose(x[1], bottom)
-    | np.isclose(x[1], top),
+    marker=lambda x: np.isclose(x[0], left),
 )
-dofs = fem.locate_dofs_topological(V_ref, entity_dim=1, entities=facets)
-bc = fem.dirichletbc(value=PETSc.ScalarType(0), dofs=dofs, V=V_ref)
-bcs = [bc]
+facets_right = mesh.locate_entities_boundary(
+    msh,
+    dim=(msh.topology.dim - 1),
+    marker=lambda x: np.isclose(x[0], right),
+)
+dofs_left = fem.locate_dofs_topological(
+    V_ref, entity_dim=(msh.topology.dim - 1), entities=facets_left
+)
+bc_left = fem.dirichletbc(value=PETSc.ScalarType(1), dofs=dofs_left, V=V_ref)
+
+dofs_right = fem.locate_dofs_topological(
+    V_ref, entity_dim=(msh.topology.dim - 1), entities=facets_right
+)
+bc_right = fem.dirichletbc(value=PETSc.ScalarType(0), dofs=dofs_right, V=V_ref)
+bcs = [bc_left, bc_right]
 lp = LinearProblem(lhs, rhs, bcs, petsc_options={"ksp_type": "cg", "pc_type": "gamg"})
 u_ref = lp.solve()
 # %%
