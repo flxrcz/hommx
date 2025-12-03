@@ -204,6 +204,26 @@ class PoissonHMM:
             for k in petsc_options_global_solve.keys():
                 del opts[k]
 
+    @property
+    def function_space(self) -> fem.FunctionSpace:
+        """Function space of the macro mesh, that can be used to set Dirichlet BCs."""
+        return self._V_macro
+
+    def set_boundary_condtions(self, bcs: list[fem.DirichletBC] | fem.DirichletBC):
+        """Set new boundary conditions. This method needs to be called before solve to accomodate
+        the new boundary conditions, by default Dirichlet 0 on the whole boundary is enforced
+        for squares or cubes.
+        You can extract
+
+        This method needs to be called if the geometry is not a square or cube.
+        Args:
+            bcs (list[fem.DirichletBC]): list of boundary conditions
+        """
+        if isinstance(bcs, list):
+            self._bcs = bcs
+        else:
+            self._bcs = [bcs]
+
     def _assemble_stiffness(self):
         """Assembly of the stiffness matrix in parallel."""
         if self._A.assembled:
@@ -228,14 +248,6 @@ class PoissonHMM:
             self._A.setValues(
                 global_dofs, global_dofs, S_loc.flatten(), addv=PETSc.InsertMode.ADD_VALUES
             )
-
-        # enforce Dirichlet BC
-        bc_dofs, ghost_index = self._bcs[0].dof_indices()
-        bc_global_dofs = self._V_macro.dofmap.index_map.local_to_global(
-            bc_dofs[:ghost_index]
-        ).astype(PETSc.IntType)
-        self._A.assemble()
-        self._A.zeroRowsColumns(bc_global_dofs, diag=1.0)
 
     def _setup_cell_problems(self) -> None:
         """Set up various structures used throughout all cell problems.
@@ -413,6 +425,7 @@ class PoissonHMM:
         """
         # assemble LHS matrix
         self._assemble_stiffness()
+        self._A.assemble()
 
         # assemble rhs
         with self._b.localForm() as b_local:
@@ -422,15 +435,31 @@ class PoissonHMM:
         self._b.ghostUpdate(
             addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE
         )  # accumulate ghost values on owning process
-
-        # enforce dirichlet boundary 0
-        local_bc_dofs = self._bcs[0].dof_indices()[0]
-        global_bc_dofs = self._V_macro.dofmap.index_map.local_to_global(local_bc_dofs).astype(
-            PETSc.IntType
-        )
-
-        self._b.setValues(global_bc_dofs, np.zeros_like(global_bc_dofs))
         self._b.assemble()
+
+        # enforce Dirichlet BC
+        for bc in self._bcs:
+            local_bc_dofs, ghost_index = bc.dof_indices()  # process local
+            bc_global_dofs = self._V_macro.dofmap.index_map.local_to_global(
+                local_bc_dofs[:ghost_index]
+            ).astype(PETSc.IntType)
+            # create vector for lifting
+            u_bc = self._u.copy()
+            u_bc.x.array[:] = 0.0
+            u_bc.x.array[local_bc_dofs] = bc.g.value
+            u_bc.x.scatter_forward()
+            b_lift = self._A.createVecLeft()
+            self._A.mult(u_bc.x.petsc_vec, b_lift)
+
+            # enforce dirichlet boundary 0
+            global_bc_dofs = self._V_macro.dofmap.index_map.local_to_global(local_bc_dofs).astype(
+                PETSc.IntType
+            )
+            bc.set(self._b)
+            self._b.axpy(-1, b_lift)
+            self._A.zeroRowsColumns(bc_global_dofs, diag=1.0)
+            self._b.setValues(global_bc_dofs, np.full(global_bc_dofs.shape, bc.g.value))
+            self._b.assemble()
 
         # we don't do lifting for now and instead rely on 0 dirchilet BC
         # with self._b.localForm() as b_local:
