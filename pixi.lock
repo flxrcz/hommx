@@ -48,6 +48,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/gcc_impl_linux-64-14.3.0-hd9e9e21_7.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/gcc_linux-64-14.3.0-h298d278_12.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/ghp-import-2.1.0-pyhd8ed1ab_2.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/git-cliff-2.10.0-h66dc0b5_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/griffe-1.14.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/h2-4.3.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/hdf5-1.14.6-mpi_mpich_h958611c_3.conda
@@ -100,6 +101,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/libgfortran-15.2.0-h69a702a_7.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/libgfortran-ng-15.2.0-h69a702a_7.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/libgfortran5-15.2.0-hcd61629_7.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/libgit2-1.9.1-hc20babb_2.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/libgomp-15.2.0-h767d61c_7.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/libgpg-error-1.55-h3f2d84a_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/libhwloc-2.12.1-default_h7f8ec31_1002.conda
@@ -157,6 +159,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/parmetis-4.0.3-hc7bef4e_1007.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/parso-0.8.5-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pathspec-0.12.1-pyhd8ed1ab_1.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/pcre2-10.47-haa7fec5_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/petsc-3.23.5-real_h8d34a51_2.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/petsc4py-3.23.5-np2py313h51ab63a_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pexpect-4.9.0-pyhd8ed1ab_1.conda
@@ -894,6 +897,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/gcc_impl_linux-64-14.3.0-hd9e9e21_7.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/gcc_linux-64-14.3.0-h298d278_12.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/ghp-import-2.1.0-pyhd8ed1ab_2.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/git-cliff-2.10.0-h66dc0b5_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/griffe-1.14.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/h2-4.3.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/hdf5-1.14.6-mpi_mpich_h958611c_3.conda
@@ -946,6 +950,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/libgfortran-15.2.0-h69a702a_7.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/libgfortran-ng-15.2.0-h69a702a_7.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/libgfortran5-15.2.0-hcd61629_7.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/libgit2-1.9.1-hc20babb_2.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/libgomp-15.2.0-h767d61c_7.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/libgpg-error-1.55-h3f2d84a_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/libhwloc-2.12.1-default_h7f8ec31_1002.conda
@@ -1003,6 +1008,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/parmetis-4.0.3-hc7bef4e_1007.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/parso-0.8.5-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pathspec-0.12.1-pyhd8ed1ab_1.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/pcre2-10.47-haa7fec5_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/petsc-3.23.5-real_h8d34a51_2.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/petsc4py-3.23.5-np2py313h51ab63a_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/pexpect-4.9.0-pyhd8ed1ab_1.conda
@@ -2304,6 +2310,21 @@ packages:
   - pkg:pypi/ghp-import?source=hash-mapping
   size: 16538
   timestamp: 1734344477841
+- conda: https://conda.anaconda.org/conda-forge/linux-64/git-cliff-2.10.0-h66dc0b5_0.conda
+  sha256: 57cb60e712384a5d88dee146a1cd8806b87d5a0d2d7bba23d24030b8c9e5510c
+  md5: c95fa04cf535ae9436ba518859d85b5b
+  depends:
+  - __glibc >=2.17,<3.0.a0
+  - libgcc >=14
+  - libzlib >=1.3.1,<2.0a0
+  - libssh2 >=1.11.1,<2.0a0
+  - libgit2 >=1.9.1,<1.10.0a0
+  constrains:
+  - __glibc >=2.17
+  license: MIT OR Apache-2.0
+  purls: []
+  size: 5189151
+  timestamp: 1753644167190
 - conda: https://conda.anaconda.org/conda-forge/noarch/griffe-1.14.0-pyhd8ed1ab_0.conda
   sha256: 5dcb68767b83f775f43b11069527a4b60f197ca202d2f78057109edcc223b5f3
   md5: fc88f51d5bd157bce041d17df8fc54ee
@@ -2356,7 +2377,7 @@ packages:
 - pypi: ./
   name: hommx
   version: 0.0.1
-  sha256: 02646d5d7c5d56f7b29e5fc65bdfb742b8ae4cdb61c071e5ef077e081de2beeb
+  sha256: e5c3fbedb9358befafc2c7315f00ffcc65a3654e940c6fc309f2337b01f51cc7
   requires_dist:
   - pyvista[jupyter]==0.46.3
   - trame-server==3.6.3
@@ -3611,6 +3632,23 @@ packages:
   purls: []
   size: 1572758
   timestamp: 1759968082504
+- conda: https://conda.anaconda.org/conda-forge/linux-64/libgit2-1.9.1-hc20babb_2.conda
+  sha256: 869ebf582e3b5a0555d0734f7356923177973f082ce0d21fea3f84df457b5dc9
+  md5: fa2e3fbf8e4523a9a6bb048028a6234f
+  depends:
+  - libstdcxx >=14
+  - libgcc >=14
+  - __glibc >=2.17,<3.0.a0
+  - libgcc >=14
+  - libzlib >=1.3.1,<2.0a0
+  - pcre2 >=10.47,<10.48.0a0
+  - openssl >=3.5.4,<4.0a0
+  - libssh2 >=1.11.1,<2.0a0
+  license: GPL-2.0-only WITH GCC-exception-2.0
+  license_family: GPL
+  purls: []
+  size: 1035266
+  timestamp: 1763817519801
 - conda: https://conda.anaconda.org/conda-forge/linux-64/libgomp-15.2.0-h767d61c_7.conda
   sha256: e9fb1c258c8e66ee278397b5822692527c5f5786d372fe7a869b900853f3f5ca
   md5: f7b4d76975aac7e5d9e6ad13845f92fe
@@ -4622,6 +4660,19 @@ packages:
   - pkg:pypi/pathspec?source=hash-mapping
   size: 41075
   timestamp: 1733233471940
+- conda: https://conda.anaconda.org/conda-forge/linux-64/pcre2-10.47-haa7fec5_0.conda
+  sha256: 5e6f7d161356fefd981948bea5139c5aa0436767751a6930cb1ca801ebb113ff
+  md5: 7a3bff861a6583f1889021facefc08b1
+  depends:
+  - __glibc >=2.17,<3.0.a0
+  - bzip2 >=1.0.8,<2.0a0
+  - libgcc >=14
+  - libzlib >=1.3.1,<2.0a0
+  license: BSD-3-Clause
+  license_family: BSD
+  purls: []
+  size: 1222481
+  timestamp: 1763655398280
 - conda: https://conda.anaconda.org/conda-forge/linux-64/petsc-3.23.5-real_h8d34a51_2.conda
   sha256: 05d411b51abc800fc024111b976422a41b3b146d65c90c1eb5ab3caed905e7c9
   md5: 075043594baeeb80a470602cb0f87a49
