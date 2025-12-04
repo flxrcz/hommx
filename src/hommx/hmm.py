@@ -130,7 +130,7 @@ class PoissonHMM:
             raise ValueError("Topology should be 3D or 2D")
         if self._tdim != self._msh.geometry.dim:
             raise ValueError(
-                "Topologocial dimension is different from geometrical dimension. Currently surfaces in 3D are not supported."
+                "Topological dimension is different from geometrical dimension. Currently surfaces in 3D are not supported."
             )
 
         self._num_basis_functions = (
@@ -261,7 +261,7 @@ class PoissonHMM:
             This method sets up objects that are used through the cell problems:
             - function spaces and functions on the cell mesh
             - periodic boundary conditions
-            - ufl forms containg the cell problem and local stiffness assembly
+            - ufl forms containing the cell problem and local stiffness assembly
                 - corresponding constants
         """
         # micro function space and periodic boundary conditions
@@ -580,7 +580,7 @@ class PoissonSemiHMM(PoissonHMM):
             This method sets up objects that are used through the cell problems:
             - function spaces and functions on the cell mesh
             - periodic boundary conditions
-            - ufl forms containg the cell problem and local stiffness assembly
+            - ufl forms containing the cell problem and local stiffness assembly
                 - corresponding constants
         """
         # micro function space and periodic boundary conditions

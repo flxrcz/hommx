@@ -68,16 +68,6 @@ def Dtheta(x):
     )
 
 
-# def theta(x):
-#     x_0 = x[0]
-#     x_1 = x[1]
-#     return ufl.as_vector([x_0, x_1])
-
-
-# def Dtheta(x):
-#     return ufl.as_matrix([[1, 0], [0, 1]])
-
-
 # %%
 # calculate reference solution
 print("Calculating reference solution")

@@ -90,7 +90,7 @@ def test_analytical_example_1(micro_mesh, macro_mesh, eps, atol):
     L2_error = fem.assemble_scalar(
         fem.form(ufl.inner(phmm_solution - u_exact, phmm_solution - u_exact) * ufl.dx)
     )
-    assert np.isclose(L2_error, 0, atol=atol), f"L^2 error to big {L2_error=}"
+    assert np.isclose(L2_error, 0, atol=atol), f"L^2 error too big {L2_error=}"
 
 
 def test_analytical_example_2(micro_mesh, macro_mesh, eps, atol):
@@ -130,7 +130,7 @@ def test_analytical_example_2(micro_mesh, macro_mesh, eps, atol):
     L2_error = fem.assemble_scalar(
         fem.form(ufl.inner(phmm_solution - u_exact, phmm_solution - u_exact) * ufl.dx)
     )
-    assert np.isclose(L2_error, 0, atol=atol), f"L^2 error to big {L2_error=}"
+    assert np.isclose(L2_error, 0, atol=atol), f"L^2 error too big {L2_error=}"
 
 
 def test_3d(micro_mesh_3d, macro_mesh_3d, reference_mesh_3d, eps_3d, atol_3d):
