@@ -35,4 +35,4 @@ conda install -c https://repo.prefix.dev/flxrcz-forge hommx
 
 ## Getting started
 
-Have a look at the example files at [examples](https://github.com/flxrcz/hommx/blob/main/examples/hmm.py).
+Have a look at the example files at [examples](https://github.com/flxrcz/hommx/blob/main/examples).
