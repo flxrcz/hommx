@@ -228,7 +228,7 @@ def create_periodic_boundary_conditions(
     if msh.topology.dim == 3:
         return _create_periodic_boundary_conditions_3d(msh, function_space, bcs)
     raise ValueError(
-        "Unkown topology dimension. {function_space.mesh.topology.dim=} is something unexpected"
+        f"Unkown topology dimension. {function_space.mesh.topology.dim=} is something unexpected"
     )
 
 
@@ -350,7 +350,7 @@ def _create_periodic_boundary_conditions_3d(
 
     Args:
         msh: Mesh that the boundary conditions should be applied to
-        function_space: Function Space on whicht the bc should be applied
+        function_space: Function Space on which the bc should be applied
         bcs: Dirichlet Boundary Conditions, here the constraint is ignored
     """
     # meshtags used to locate boundary entitites
@@ -553,7 +553,9 @@ class PoissonFEM:
             | np.isclose(x[1], bottom)
             | np.isclose(x[1], top),
         )
-        dofs = fem.locate_dofs_topological(self._V, entity_dim=1, entities=facets)
+        dofs = fem.locate_dofs_topological(
+            self._V, entity_dim=(msh.topology.dim - 1), entities=facets
+        )
         bc = fem.dirichletbc(value=PETSc.ScalarType(0), dofs=dofs, V=self._V)
         self._bcs = [bc]
         self._lp = LinearProblem(lhs, rhs, self._bcs)
