@@ -7,13 +7,33 @@ requires-python = ">=3.13, <3.14"
 dependencies = ["pyvista[jupyter]==0.46.3", "trame-server==3.6.3"]
 
 # ------------------------------------------------------------------------------------- #
-#                                          PIXI                                         #
+#                                      PIXI BUILD                                       #
 # ------------------------------------------------------------------------------------- #
+[build-system]
+build-backend = "hatchling.build"
+requires = ["hatchling"]
 
 [tool.pixi.workspace]
 channels = ["conda-forge"]
 platforms = ["linux-64"]
+preview = ["pixi-build"]
 
+[tool.pixi.package.build]
+backend = { name = "pixi-build-python", version = "*" }
+
+[tool.pixi.package.host-dependencies]
+hatchling = "*"
+
+[tool.pixi.package.run-dependencies]
+fenics-dolfinx = ">=0.9.0,<0.10.0"
+dolfinx_mpc = ">=0.9.3, <1"
+numpy = "*"
+scipy = ">=1.15.2,<2"
+pip = ">=25.1.1,<26"
+scifem = ">=0.13,<1"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hommx"]
 
 # ------------------------------------------------------------------------------------- #
 #                                   PIXI DEPENDENCIES                                   #
@@ -48,6 +68,7 @@ pytest-cov = ">=6.2.1"
 mkdocs-material = ">=9.6.18"
 mkdocs-autorefs = ">=1.4.3"
 mkdocstrings-python = ">=1.18.0"
+git-cliff = ">=2.10.0"
 
 [tool.pixi.environments]
 dev = { features = ["dev", "test"], solve-group = "default" }
