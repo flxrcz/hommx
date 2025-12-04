@@ -119,7 +119,7 @@ select = [
 fixable = ["ALL"]
 unfixable = []
 dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
-per-file-ignores = { "test/*" = ["D100", "D102", "D103", "D107", "INP001", "N802"] }
+per-file-ignores = { "test/*" = ["D100", "D102", "D103", "D107", "INP001", "N802"], "examples/*" = ["N816"] }
 
 [tool.ruff.format]
 quote-style = "double"
