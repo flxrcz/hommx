@@ -22,6 +22,7 @@ Additionally it includes an implementation for a stratified periodic coefficient
 
 - **PoissonHMM**: HMM solver for Poisson problems with periodic micro-structure
 - **PoissonSemiHMM**: HMM solver for Poisson problems with stratified periodic micro-structure
+- **LinearElasticityHMM**: HMM solver for Linear Elasticity with periodic micro-structure
 - Support for 2D and 3D domains
 - Integration with DOLFINx's modern FEM framework
 

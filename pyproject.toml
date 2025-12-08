@@ -123,6 +123,7 @@ ignore = [
   "N803",
   "N806",
   "E501",
+  "E741",
 ]
 select = [
   # pyflakes
@@ -140,7 +141,7 @@ select = [
 fixable = ["ALL"]
 unfixable = []
 dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
-per-file-ignores = { "test/*" = ["D100", "D102", "D103", "D107", "INP001", "N802"], "examples/*" = ["N816"] }
+per-file-ignores = { "test/*" = ["D100", "D102", "D103", "D107", "INP001", "N802",], "examples/*" = ["N816"] }
 
 [tool.ruff.format]
 quote-style = "double"
