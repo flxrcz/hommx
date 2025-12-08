@@ -2,7 +2,7 @@
 
 Classes:
     PeriodicLinearProblem: linear problem class that automatically
-    adds periodic boundary conditions on boxes.
+        adds periodic boundary conditions on boxes.
 """
 
 import dolfinx_mpc

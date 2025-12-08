@@ -103,9 +103,9 @@ class PoissonHMM:
                 so that the cells live entirely within their corresponding element.
                 If this is not the case, results may be rubish.
             petsc_options_global_solve (optional): PETSc solver options for the global solver, see
-            PETSC documentation.
+                PETSC documentation.
             petsc_options_cell_problem (optional): PETSc solver options for the global solver, see
-            PETSC documentation.
+                PETSC documentation.
             petsc_options_prefix (optional): options prefix used for PETSc options. Defaults to "hommx_PoissonHMM".
         """
         self._msh = msh
@@ -745,9 +745,9 @@ class LinearElasticityHMM:
                 so that the cells live entirely within their corresponding element.
                 If this is not the case, results may be rubish.
             petsc_options_global_solve (optional): PETSc solver options for the global solver, see
-            PETSC documentation.
+                PETSC documentation.
             petsc_options_cell_problem (optional): PETSc solver options for the global solver, see
-            PETSC documentation.
+                PETSC documentation.
             petsc_options_prefix (optional): options prefix used for PETSc options. Defaults to "hommx_PoissonHMM".
         """
         self._msh = msh
