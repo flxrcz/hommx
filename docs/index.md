@@ -26,7 +26,7 @@ Additionally it includes an implementation for a stratified periodic coefficient
 - Integration with DOLFINx's modern FEM framework
 
 ## Installation
-hommx is available as a conda package on [Prefix]((https://prefix.dev/channels/flxrcz-forge/hommx)).
+hommx is available as a conda package on [Prefix](https://prefix.dev/channels/flxrcz-forge/packages/hommx).
 To install it simply run
 
 ```bash

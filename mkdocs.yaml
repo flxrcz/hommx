@@ -82,9 +82,10 @@ plugins:
             allow_inspection: true
             annotations_path: source
             docstring_style: google
-            filters: []
+            # filters: ["!^_"]
             group_by_category: true
             line_length: 100
+            inherited_members: true
             members: true
             members_order: source
             merge_init_into_class: false
@@ -101,7 +102,10 @@ plugins:
             show_source: false
             show_symbol_type_heading: true
             show_symbol_type_toc: true
-            imported_members: false
+            extra:
+              show_private_members: false
+              imported_members: false
+
 
 # -- Extra configuration ---------------------------------------------------------------------------
 extra_javascript:
