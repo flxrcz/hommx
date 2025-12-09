@@ -73,9 +73,7 @@ class PoissonHMM:
     def __init__(
         self,
         msh: mesh.Mesh,
-        A: Callable[
-            [np.ndarray[tuple[int], np.dtype[float]]], Callable[[ufl.SpatialCoordinate], ufl.Form]
-        ],
+        A: Callable[[fem.Constant, ufl.SpatialCoordinate], ufl.Form],
         f: ufl.form,
         msh_micro: mesh.Mesh,
         eps: float,
@@ -487,7 +485,7 @@ class PoissonHMM:
         plotter.show()
 
 
-class PoissonSemiHMM(PoissonHMM):
+class PoissonStratifiedHMM(PoissonHMM):
     r"""Solver for the Multi-Scale Poisson problem using the HMM.
 
     This class implements the Heterogenous-Multi-Scale Method for a Poisson problem.
@@ -630,37 +628,6 @@ class PoissonSemiHMM(PoissonHMM):
         ]
 
 
-def _triangle_area(points):
-    return 0.5 * np.linalg.norm(np.cross(points[1] - points[0], points[2] - points[0]))
-
-
-def _tetrahedron_volume(points):
-    return (
-        np.abs(np.linalg.det([points[1] - points[0], points[2] - points[0], points[3] - points[0]]))
-        / 6.0
-    )
-
-
-def _unroll_dofs(dofs: np.ndarray, bs: int, dtype=PETSc.IntType):
-    """unrolls blocked dofs into array indices"""
-    dofs = np.asarray(dofs)
-    assert len(dofs.shape) == 1, "Only flattened dof arrays allowed"
-    ret = np.array(
-        [[dofs[i] * bs + k for k in range(bs)] for i in range(len(dofs))], dtype=dtype
-    ).flatten()
-    return ret
-
-
-def _local_to_global_unrolled(dofs: np.ndarray, V: fem.FunctionSpace):
-    """maps local to global dofs, for unrolled dofs."""
-    local_dofs_rerolled = dofs // V.dofmap.index_map_bs
-    offsets = dofs % V.dofmap.index_map_bs
-    global_dofs_unrolled = (
-        V.dofmap.index_map.local_to_global(local_dofs_rerolled) * V.dofmap.index_map_bs + offsets
-    )
-    return global_dofs_unrolled
-
-
 class LinearElasticityHMM:
     r"""Solver for the Multi-Scale Linear Elasticity problem using the HMM.
 
@@ -715,15 +682,13 @@ class LinearElasticityHMM:
     def __init__(
         self,
         msh: mesh.Mesh,
-        A: Callable[
-            [np.ndarray[tuple[int], np.dtype[float]]], Callable[[ufl.SpatialCoordinate], ufl.Form]
-        ],
+        A: Callable[[fem.Constant, ufl.SpatialCoordinate], ufl.Form],
         f: ufl.form,
         msh_micro: mesh.Mesh,
         eps: float,
         petsc_options_global_solve: dict | None = None,
         petsc_options_cell_problem: dict | None = None,
-        petsc_options_prefix: str = "hommx_PoissonHMM",
+        petsc_options_prefix: str = "hommx_LinearElasticityHMM",
     ):
         r"""Initializes the solver, meshes and boundary condtions.
 
@@ -1120,3 +1085,34 @@ class LinearElasticityHMM:
         plotter.add_mesh(warped)
 
         plotter.show()
+
+
+def _triangle_area(points):
+    return 0.5 * np.linalg.norm(np.cross(points[1] - points[0], points[2] - points[0]))
+
+
+def _tetrahedron_volume(points):
+    return (
+        np.abs(np.linalg.det([points[1] - points[0], points[2] - points[0], points[3] - points[0]]))
+        / 6.0
+    )
+
+
+def _unroll_dofs(dofs: np.ndarray, bs: int, dtype=PETSc.IntType):
+    """unrolls blocked dofs into array indices"""
+    dofs = np.asarray(dofs)
+    assert len(dofs.shape) == 1, "Only flattened dof arrays allowed"
+    ret = np.array(
+        [[dofs[i] * bs + k for k in range(bs)] for i in range(len(dofs))], dtype=dtype
+    ).flatten()
+    return ret
+
+
+def _local_to_global_unrolled(dofs: np.ndarray, V: fem.FunctionSpace):
+    """maps local to global dofs, for unrolled dofs."""
+    local_dofs_rerolled = dofs // V.dofmap.index_map_bs
+    offsets = dofs % V.dofmap.index_map_bs
+    global_dofs_unrolled = (
+        V.dofmap.index_map.local_to_global(local_dofs_rerolled) * V.dofmap.index_map_bs + offsets
+    )
+    return global_dofs_unrolled

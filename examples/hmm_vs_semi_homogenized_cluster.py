@@ -18,7 +18,7 @@ from hmm_vs_semi_create_reference_cluster import (
 from mpi4py import MPI
 
 from hommx.helpers import PoissonFEM
-from hommx.hmm import PoissonHMM, PoissonSemiHMM
+from hommx.hmm import PoissonHMM, PoissonStratifiedHMM
 
 # eps = 0.9 * 1 / 2**6
 # eps = 0.9 * 1 / 2**7 # cluster
@@ -100,7 +100,7 @@ if __name__ == "__main__":
             eps,
             petsc_options_cell_problem={"ksp_atol": 1e-9, "ksp_type": "gmres", "pc_type": "ilu"},
         )
-        phmmsemi = PoissonSemiHMM(
+        phmmsemi = PoissonStratifiedHMM(
             msh,
             A,
             f,

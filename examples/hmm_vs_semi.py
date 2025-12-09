@@ -13,7 +13,7 @@ from mpi4py import MPI
 from petsc4py import PETSc
 
 from hommx.helpers import PoissonFEM
-from hommx.hmm import PoissonHMM, PoissonSemiHMM
+from hommx.hmm import PoissonHMM, PoissonStratifiedHMM
 
 eps = 0.9 * 1 / 2**3
 BOX = 5
@@ -132,7 +132,7 @@ for N in Ns:
     msh = mesh.create_rectangle(MPI.COMM_WORLD, np.array([[0, 0], [BOX, BOX]]), [nx, nx])
     msh2 = mesh.create_unit_square(MPI.COMM_SELF, nx, 70)
     phmm = PoissonHMM(msh, A, f, msh2, eps, petsc_options_cell_problem={"ksp_atol": 1e-9})
-    phmmsemi = PoissonSemiHMM(
+    phmmsemi = PoissonStratifiedHMM(
         msh, A, f, msh2, eps, Dtheta, petsc_options_cell_problem={"ksp_atol": 1e-9}
     )
     pfem = PoissonFEM(msh, A_fem, f)
