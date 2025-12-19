@@ -84,7 +84,9 @@ def test_analytical_example_1(micro_mesh, macro_mesh, eps, atol):
     def solution(x):
         return ufl.sin(ufl.pi * x[0]) * ufl.sin(ufl.pi * x[1])
 
-    phmm = PoissonHMM(macro_mesh, A, f, micro_mesh, eps)
+    phmm = PoissonHMM(
+        macro_mesh, A, f, micro_mesh, eps, petsc_options_cell_problem={"ksp_atol": 1e-10}
+    )
     phmm_solution = phmm.solve()
     u_exact = solution(ufl.SpatialCoordinate(macro_mesh))
     L2_error = fem.assemble_scalar(
@@ -124,7 +126,9 @@ def test_analytical_example_2(micro_mesh, macro_mesh, eps, atol):
     def solution(x):
         return ufl.sin(ufl.pi * x[0]) * ufl.sin(ufl.pi * x[1])
 
-    phmm = PoissonHMM(macro_mesh, A, f, micro_mesh, eps)
+    phmm = PoissonHMM(
+        macro_mesh, A, f, micro_mesh, eps, petsc_options_cell_problem={"ksp_atol": 1e-10}
+    )
     phmm_solution = phmm.solve()
     u_exact = solution(ufl.SpatialCoordinate(macro_mesh))
     L2_error = fem.assemble_scalar(

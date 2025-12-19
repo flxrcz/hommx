@@ -162,3 +162,5 @@ addopts = [
     "--cov=hommx",
     "--cov-config=.coveragerc",
 ]
+log_cli = true
+log_cli_level="INFO"
