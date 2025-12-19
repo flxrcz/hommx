@@ -1,10 +1,7 @@
-"""Implementation of the Heterogenous-Multi-Scale-Method using dolfinx.
-
-Classes:
-    PoissonHMM: Solver for the HMM on the Poisson Equation.
-"""
+"""Base class for HMM solvers using DOLFINx."""
 
 import logging
+from abc import ABC, abstractmethod
 from collections.abc import Callable
 
 import numpy as np
@@ -23,7 +20,452 @@ REFERENCE_EVALUATION_POINT_3D = np.array([[1 / 3, 1 / 3, 1 / 3]])
 REFERENCE_EVALUATION_POINT_2D = np.array([[1 / 3, 1 / 3]])
 
 
-class PoissonHMM:
+def _triangle_area(points):
+    return 0.5 * np.linalg.norm(np.cross(points[1] - points[0], points[2] - points[0]))
+
+
+def _tetrahedron_volume(points):
+    return (
+        np.abs(np.linalg.det([points[1] - points[0], points[2] - points[0], points[3] - points[0]]))
+        / 6.0
+    )
+
+
+def _unroll_dofs(dofs: np.ndarray, bs: int, dtype=PETSc.IntType):
+    """unrolls blocked dofs into array indices"""
+    if bs == 1:  # non-blocked dofs don't need to be unrolled
+        return dofs
+    dofs = np.asarray(dofs)
+    assert len(dofs.shape) == 1, "Only flattened dof arrays allowed"
+    ret = np.array(
+        [[dofs[i] * bs + k for k in range(bs)] for i in range(len(dofs))], dtype=dtype
+    ).flatten()
+    return ret
+
+
+def _local_to_global_unrolled(dofs: np.ndarray, V: fem.FunctionSpace):
+    """maps local to global dofs, for unrolled dofs."""
+    local_dofs_rerolled = dofs // V.dofmap.index_map_bs
+    offsets = dofs % V.dofmap.index_map_bs
+    global_dofs_unrolled = (
+        V.dofmap.index_map.local_to_global(local_dofs_rerolled) * V.dofmap.index_map_bs + offsets
+    )
+    return global_dofs_unrolled
+
+
+class BaseHMM(ABC):
+    r"""Abstract base class for Heterogeneous Multi-Scale Method solvers.
+
+    Provides common infrastructure for scalar and vector-valued HMM problems.
+    Subclasses must implement:
+    - `_setup_macro_function_space()`: Set up macro-scale function space
+    - `_setup_micro_function_space()`: Set up micro-scale function space
+    - `_setup_cell_problem_forms()`: Set up micro-scale cell problem forms, take a look at PoissonHMM for an example
+    """
+
+    def __init__(
+        self,
+        msh: mesh.Mesh,
+        A: Callable[[fem.Constant, ufl.SpatialCoordinate], ufl.Form],
+        f: Callable,
+        msh_micro: mesh.Mesh,
+        eps: float,
+        petsc_options_global_solve: dict | None = None,
+        petsc_options_cell_problem: dict | None = None,
+        petsc_options_prefix: str = "hommx_HMM",
+    ):
+        r"""Initializes the solver, meshes and boundary conditions.
+
+        Args:
+            msh: The macro mesh, on which we want to solve the oscillatory PDE.
+            A: The coefficient, should be callable like: `A(x)(y)`,
+                where x is a spatial coordinate on the macro mesh (the cell center c_T)
+                and y is a ufl.SpatialCoordinate on the microscopic mesh.
+                A needs to be 1-periodic in y.
+            f: The right hand side of the problem.
+            msh_micro: The microscopic mesh, needs to be the unit cell.
+                Should live on MPI.COMM_SELF since each process owns a whole copy.
+            eps: The microscopic scaling parameter.
+            petsc_options_global_solve: PETSc solver options for the global solver.
+            petsc_options_cell_problem: PETSc solver options for the cell problem solver.
+            petsc_options_prefix: Options prefix used for PETSc options.
+        """
+        self._msh = msh
+        self._comm = msh.comm
+        self._coeff = A
+        self._f = f
+        self._eps = eps
+        self._cell_mesh = msh_micro
+        self._tdim = self._msh.topology.dim
+
+        if self._tdim not in (2, 3):
+            raise ValueError("Topology should be 3D or 2D")
+        if self._tdim != self._msh.geometry.dim:
+            raise ValueError(
+                "Topological dimension is different from geometrical dimension. Currently surfaces in 3D are not supported."
+            )
+        if msh_micro.topology.dim != msh_micro.geometry.dim:
+            raise ValueError(
+                "Topological dimension is different from geometrical dimension for micro mesh."
+            )
+        if self._tdim != msh_micro.topology.dim:
+            raise ValueError("Micro and macro mesh should have the same dimensionality.")
+
+        # Setup dimension-dependent functions
+        if self._tdim == 3:
+            self._reference_evaluation_point = REFERENCE_EVALUATION_POINT_3D
+            self._volume_function = _tetrahedron_volume
+        else:
+            self._reference_evaluation_point = REFERENCE_EVALUATION_POINT_2D
+            self._volume_function = _triangle_area
+
+        # Setup function space (subclass-specific)
+        self._V_macro = self._setup_macro_function_space()
+        self._bs = self._V_macro.dofmap.index_map_bs
+
+        # Setup RHS and forms
+        self._v_test = ufl.TestFunction(self._V_macro)
+        self._x = ufl.SpatialCoordinate(self._msh)
+        L = ufl.inner(f(self._x), self._v_test) * ufl.dx
+        self._L = fem.form(L)
+        self._b = create_vector(self._L)
+        self._u = fem.Function(self._V_macro)
+        self._x = la.create_petsc_vector_wrap(self._u.x)
+
+        # Setup matrix dimensions
+        self._num_basis_functions_per_cell = (
+            self._tdim + 1
+        ) * self._bs  # 3 basis functions for triangles, 4 for tetrahedra times block size
+        self._num_global_dofs = self._V_macro.dofmap.index_map.size_global * self._bs
+        self._num_local_dofs = self._V_macro.dofmap.index_map.size_local * self._bs
+
+        self._A = PETSc.Mat().createAIJ(
+            (
+                (self._num_local_dofs, self._num_global_dofs),
+                (self._num_local_dofs, self._num_global_dofs),
+            )
+        )
+
+        # Setup logging and solver
+        self._logger = logging.getLogger(__name__)
+
+        if petsc_options_cell_problem is None:
+            petsc_options_cell_problem = {"ksp_atol": 1e-12}
+        self._petsc_options_cell_problem = petsc_options_cell_problem
+
+        self._solver = PETSc.KSP().create(self._comm)
+        self._solver.setOptionsPrefix(petsc_options_prefix)
+        opts = PETSc.Options()  # type: ignore
+        opts.prefixPush(petsc_options_prefix)
+        if petsc_options_global_solve is not None:
+            for k, v in petsc_options_global_solve.items():
+                opts[k] = v
+            self._solver.setFromOptions()
+            for k in petsc_options_global_solve.keys():
+                del opts[k]
+
+        opts.prefixPop()
+        self._bcs = []
+
+    @abstractmethod
+    def _setup_macro_function_space(self) -> fem.FunctionSpace:
+        """Setup macro-scale function space. Must be implemented by subclasses."""
+        pass
+
+    @abstractmethod
+    def _setup_micro_function_space(self) -> fem.FunctionSpace:
+        """Setup macro-scale function space. Must be implemented by subclasses."""
+        pass
+
+    def _setup_cell_problems(self) -> None:
+        """Setup cell problem specifics"""
+        # micro function space and periodic boundary conditions
+        self._V_micro = self._setup_micro_function_space()
+        self._mpc = helpers.create_periodic_boundary_conditions(self._V_micro, self._bcs)
+        self._points_micro = self._V_micro.tabulate_dof_coordinates()
+        self._v_tilde = ufl.TrialFunction(self._V_micro)
+        self._z = ufl.TestFunction(self._V_micro)
+        self._y = ufl.SpatialCoordinate(self._cell_mesh)
+
+        # setup constants that are reused throughout
+        # constant that can be used in the cell problem for the slow variable
+        self._x_macro = fem.Constant(
+            self._cell_mesh, np.zeros((self._cell_mesh.geometry.x.shape[1],))
+        )
+
+        # placeholder function that can be used in the cell problems
+        self._v_macro = fem.Function(self._V_macro)
+        self._grad_v_macro = fem.Expression(
+            ufl.grad(self._v_macro), self._reference_evaluation_point
+        )
+        # we follow the definition that grad(v)_ij = \partial v_i \partial x_j, except for scalar valued
+        # where grad should be a 1-dim array for simplicity, else A*grad(v) needs indices to make
+        # the summation explicit
+        if self._bs == 1:
+            self._grad_v_micro = fem.Constant(self._cell_mesh, np.zeros((self._tdim,)))
+        else:
+            self._grad_v_micro = fem.Constant(self._cell_mesh, np.zeros((self._bs, self._tdim)))
+
+        # coefficient
+        self._A_micro = self._coeff(self._x_macro, self._y)
+
+        # setup of placeholder functions for the micro functions
+        self._v_micros = [
+            fem.Function(self._V_micro) for _ in range(self._num_basis_functions_per_cell)
+        ]
+        # placeholders for the correctors
+        self._correctors = [
+            fem.Function(self._V_micro) for _ in range(self._num_basis_functions_per_cell)
+        ]
+
+        self._a_micro_compiled, self._L_micro_compiled, self._local_stiffness_forms = (
+            self._setup_cell_problem_forms()
+        )
+
+    @abstractmethod
+    def _setup_cell_problem_forms(self) -> tuple[fem.Form, fem.Form, list[fem.Form]]:
+        """Setup cell problem forms. Must be implemented by subclasses.
+        Please use the variables in _setup_cell_problems inside those forms for efficiency.
+        Returns
+            a: lhs form for the cell problem
+            L: rhs form for the cell problem
+            S: multidimensional list, s.t. S[i][j] is the form that calculates the $S_{ij}$-entry in the local stiffness matrix
+
+        """
+        pass
+
+    @property
+    def function_space(self) -> fem.FunctionSpace:
+        """Function space of the macro mesh."""
+        return self._V_macro
+
+    def set_boundary_condtions(self, bcs: list[fem.DirichletBC] | fem.DirichletBC):
+        """Set boundary conditions.
+
+        Args:
+            bcs: Single BC or list of BCs
+        """
+        if isinstance(bcs, list):
+            self._bcs = bcs
+        else:
+            self._bcs = [bcs]
+
+    def _assemble_stiffness(self):
+        """Assembly of the stiffness matrix in parallel."""
+        if self._A.assembled:
+            return
+
+        self._setup_cell_problems()
+        num_local_cells = self._V_macro.mesh.topology.index_map(self._tdim).size_local
+
+        # cell problem loop
+        for local_cell_index in tqdm(range(num_local_cells)):
+            local_dofs = self._V_macro.dofmap.cell_dofs(local_cell_index)
+            global_dofs = self._V_macro.dofmap.index_map.local_to_global(local_dofs).astype(
+                PETSc.IntType
+            )
+
+            # actual matrix entries are unrolled
+            global_dofs_unrolled = _unroll_dofs(global_dofs, self._bs)
+            # local assembly for one cell
+            S_loc = self._compute_local_stiffness(local_cell_index)
+            if np.any(np.isnan(S_loc)):
+                self._logger.error(
+                    f"Something went wrong when calculating local matrix on cell {local_cell_index}"
+                )
+            # global assembly
+            self._A.setValues(
+                global_dofs_unrolled,
+                global_dofs_unrolled,
+                S_loc.flatten(),
+                addv=PETSc.InsertMode.ADD_VALUES,
+            )
+
+    def _compute_local_stiffness(self, cell_index: int) -> np.ndarray:
+        """Computes the local stiffness matrix on one element by solving the cell problem for all
+        basis functions on that cell.
+
+        Args:
+            cell_index: process-local index of the cell for which the homogenized coefficient
+            is to be approximated
+
+        Returns:
+            np.ndarray: local stiffness matrix
+        """
+        local_dofs = self._V_macro.dofmap.cell_dofs(cell_index)
+        local_dofs_unrolled = _unroll_dofs(local_dofs, self._bs)
+        points = self._V_macro.tabulate_dof_coordinates()[local_dofs]
+        c_t = np.mean(points, axis=0)
+        # update the x value in the precompiled forms containing A
+        self._x_macro.value = c_t
+
+        for i, local_dof in enumerate(local_dofs_unrolled):
+            self._v_macro.x.array[:] = 0.0
+            self._v_macro.x.array[local_dof] = 1.0
+            self._interpolate_macro_to_micro(
+                self._v_macro, self._grad_v_macro, cell_index, self._v_micros[i]
+            )
+            self._calculate_corrector(cell_index, self._correctors[i])
+
+        # local stiffness matrix
+        S_loc = np.zeros((self._num_basis_functions_per_cell, self._num_basis_functions_per_cell))
+        for i in range(S_loc.shape[0]):
+            for j in range(S_loc.shape[1]):
+                S_loc[i, j] = fem.assemble_scalar(self._local_stiffness_forms[i][j])
+
+        # scale contribution
+        cell_area = self._volume_function(points)
+        Y_area = 1
+        return S_loc * cell_area / Y_area
+
+    def _interpolate_macro_to_micro(
+        self,
+        v_macro: fem.Function,
+        grad_v_macro_expr: fem.Expression,
+        cell_index: int,
+        v_micro: fem.Function | None = None,
+    ) -> fem.Function:
+        """Interpolates a function from the macro mesh onto the micro mesh.
+
+        Since we know that the micro domain is contained inside one macro cell,
+        we can avoid dolfinx interpolate_nonmatching and instead rely on evaluating directly.
+
+        Notes:
+            This function has the side effect of updating the constant self._grad_v_micro
+            that is used in the precompiled form for the cell problem.
+
+        Args:
+            v_macro: Macro function
+            grad_v_macro_expr: Expression for the gradient of the macroscopic function
+            cell_index: cell index on which the cell problem is solved
+            v_micro: Micro function, if none is provided one is created
+
+        """
+        if v_micro is None:
+            v_micro = fem.Function(self._V_micro)
+        cells = np.full(self._points_micro.shape[0], cell_index, dtype=np.int32)
+        v_micro.x.array[:] = v_macro.eval(self._points_micro, cells=cells).flatten()
+
+        # update gradient constant in compiled form
+        grad_eval = grad_v_macro_expr.eval(self._msh, [cell_index])
+        self._grad_v_micro.value = grad_eval.reshape(self._grad_v_micro.value.shape)
+        return v_micro
+
+    def _calculate_corrector(
+        self,
+        cell_index: int,
+        corrector: fem.Function | None = None,
+    ):
+        """Calculates the corrector by solving the cell problem.
+
+        Notes:
+            The micro function for which the corrector should be calculated does not show up,
+            since the precompiled form uses a constant that is updated in _interpolate_macro_to_micro.
+
+        Args:
+            cell_index: the process-local index of the cell
+                on which the cell problem should be solved
+            corrector: function on the micro mesh that stores the corrector,
+                if none is provided one is created
+        """
+        if corrector is None:
+            corrector = fem.Function(self._V_micro)
+
+        problem = cell_problem.PeriodicLinearProblem(
+            self._a_micro_compiled,
+            self._L_micro_compiled,
+            self._mpc,
+            petsc_options=self._petsc_options_cell_problem,
+        )
+        v_tilde_sol = problem.solve()
+        if problem._solver.getConvergedReason() < 0:
+            self._logger.error(
+                f"Something went wrong in the cell problem solving for cell {cell_index}. PETSc solver failed with reason {problem._solver.getConvergedReason()}"
+            )
+        corrector.x.array[:] = v_tilde_sol.x.array
+        return corrector
+
+    def solve(self) -> fem.Function:
+        """Assemble the LHS, RHS and solve the problem
+
+        This method assembles the HMM stiffness matrix, so depending on the problem it might
+        run for some time.
+        """
+        # assemble LHS matrix
+        self._assemble_stiffness()
+        self._A.assemble()
+
+        # assemble rhs
+        with self._b.localForm() as b_local:
+            b_local.set(0)
+        with self._b.localForm() as b_local:
+            _assemble_vector_array(b_local.array_w, self._L, None, None)
+        self._b.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
+        self._b.assemble()
+
+        # enforce Dirichlet BC by lifting
+        for bc in self._bcs:
+            local_bc_dofs, ghost_index = bc.dof_indices()
+            global_bc_dofs = _local_to_global_unrolled(
+                local_bc_dofs[:ghost_index], self._V_macro
+            ).astype(PETSc.IntType)
+            if bc.g.value.ndim == 0:
+                bc_value = np.full(global_bc_dofs.shape, bc.g.value)
+            else:
+                bc_value = np.tile(bc.g.value, local_bc_dofs.shape[0] // bc.g.value.shape[0])
+
+            u_bc = self._u.copy()
+            u_bc.x.array[:] = 0.0
+            u_bc.x.array[local_bc_dofs] = bc_value
+            u_bc.x.scatter_forward()
+            b_lift = self._A.createVecLeft()
+            self._A.mult(u_bc.x.petsc_vec, b_lift)
+
+            bc.set(self._b)
+            self._b.axpy(-1, b_lift)
+            self._A.zeroRowsColumns(global_bc_dofs, diag=1.0)
+            self._b.setValues(global_bc_dofs, bc_value)
+            self._b.assemble()
+
+        self._solver.setOperators(self._A)
+        self._solver.solve(self._b, self._x)
+
+        if self._solver.getConvergedReason() < 0:
+            self._logger.error(
+                f"Something went wrong in the global problem solve. PETSc solver failed with reason {self._solver.getConvergedReason()}"
+            )
+
+        self._u.x.scatter_forward()
+        return self._u
+
+    def _get_global_bc_dofs(self, local_bc_dofs, ghost_index):
+        """Get global BC DOFs. Override in subclasses if needed."""
+        return self._V_macro.dofmap.index_map.local_to_global(local_bc_dofs[:ghost_index]).astype(
+            PETSc.IntType
+        )
+
+    def plot_solution(self, u: fem.Function | None = None):
+        """Simple plot of the solution using pyvista.
+
+        Solve needs to be run before calling this.
+        On parallel methods each process only plots the local part.
+
+        """
+        if u is None:
+            u = self._u
+        cells, types, x = plot.vtk_mesh(self._V_macro)
+        grid = pv.UnstructuredGrid(cells, types, x)
+        grid.point_data["u"] = u.x.array
+        grid.set_active_scalars("u")
+        plotter = pv.Plotter(notebook=True)
+        plotter.add_mesh(grid, show_edges=True)
+        warped = grid.warp_by_scalar()
+        plotter.add_mesh(warped)
+
+        plotter.show()
+
+
+class PoissonHMM(BaseHMM):
     r"""Solver for the Multi-Scale Poisson problem using the HMM.
 
     This class implements the Heterogenous-Multi-Scale Method for a Poisson problem.
@@ -74,65 +516,39 @@ class PoissonHMM:
         self,
         msh: mesh.Mesh,
         A: Callable[[fem.Constant, ufl.SpatialCoordinate], ufl.Form],
-        f: ufl.form,
+        f: Callable,
         msh_micro: mesh.Mesh,
         eps: float,
         petsc_options_global_solve: dict | None = None,
         petsc_options_cell_problem: dict | None = None,
         petsc_options_prefix: str = "hommx_PoissonHMM",
     ):
-        r"""Initializes the solver, meshes and boundary condtions.
+        r"""Initializes the solver, meshes and boundary conditions.
 
         Args:
-            msh: The macro mesh, on which we want to solve the oscillatory Poisson equation.
-                This mesh can live on MPI.COMM_WORLD and the cell problems are automatically solved
-                on each process in parallel.
-            A: The coefficient, it should be callable like: `A(x)(y)`,
-                where $x$ is a spatial coordinate on the macro mesh (the cell center $c_T$)
-                and $y$ is a ufl.SpatialCoordinate on the microscopic mesh,
-                that is passed to dolfinx to solve the cell problem.
-                A needs to be 1-periodic in y, at least for the theory to work.
-            f: The right hand side of the Poisson problem.
-            msh_micro (mesh.Mesh): The microscopic mesh, this needs to be the unit-square.
-                Further it needs to live on MPI.COMM_SELF, since every process owns a whole copy
-                of the microscopic mesh. If any other communicator but MPI.COMM_SELF is used the
-                results will most likely be rubish.
-            eps: $\varepsilon$, the microscopic scaling. Note that this needs to be small enough,
-                so that the cells live entirely within their corresponding element.
-                If this is not the case, results may be rubish.
-            petsc_options_global_solve (optional): PETSc solver options for the global solver, see
-                PETSC documentation.
-            petsc_options_cell_problem (optional): PETSc solver options for the global solver, see
-                PETSC documentation.
-            petsc_options_prefix (optional): options prefix used for PETSc options. Defaults to "hommx_PoissonHMM".
+            msh: The macro mesh, on which we want to solve the oscillatory PDE.
+            A: The coefficient, should be callable like: `A(x)(y)`,
+                where x is a spatial coordinate on the macro mesh (the cell center c_T)
+                and y is a ufl.SpatialCoordinate on the microscopic mesh.
+                A needs to be 1-periodic in y.
+            f: The right hand side of the problem.
+            msh_micro: The microscopic mesh, needs to be the unit cell.
+                Should live on MPI.COMM_SELF since each process owns a whole copy.
+            eps: The microscopic scaling parameter.
+            petsc_options_global_solve: PETSc solver options for the global solver.
+            petsc_options_cell_problem: PETSc solver options for the cell problem solver.
+            petsc_options_prefix: Options prefix used for PETSc options.
         """
-        self._msh = msh
-        self._comm = msh.comm
-        self._coeff = A
-        self._f = f
-        self._eps = eps
-        self._cell_mesh = msh_micro  # create a copy of the mesh, just in case
-        self._V_macro = fem.functionspace(self._msh, ("Lagrange", 1))  # Macroscopic function space
-        self._v_test = ufl.TestFunction(self._V_macro)
-        self._x = ufl.SpatialCoordinate(self._msh)
-        L = ufl.inner(f(self._x), self._v_test) * ufl.dx
-        self._L = fem.form(L)
-        self._b = create_vector(self._L)
-        self._u = fem.Function(self._V_macro)
-        self._x = la.create_petsc_vector_wrap(self._u.x)
-
-        # setup 2D vs 3D differences
-        self._tdim = self._msh.topology.dim
-        if self._tdim not in (2, 3):
-            raise ValueError("Topology should be 3D or 2D")
-        if self._tdim != self._msh.geometry.dim:
-            raise ValueError(
-                "Topological dimension is different from geometrical dimension. Currently surfaces in 3D are not supported."
-            )
-
-        self._num_basis_functions = (
-            self._tdim + 1
-        )  # 3 basis functions for triangles, 4 for tetrahedra
+        super().__init__(
+            msh,
+            A,
+            f,
+            msh_micro,
+            eps,
+            petsc_options_global_solve,
+            petsc_options_cell_problem,
+            petsc_options_prefix,
+        )
         if self._tdim == 3:
             # Dirichlet BC
             left = np.min(self._msh.geometry.x[:, 0])
@@ -151,8 +567,6 @@ class PoissonHMM:
                 | np.isclose(x[2], back)
                 | np.isclose(x[2], front),
             )
-            self._reference_evaluation_point = REFERENCE_EVALUATION_POINT_3D
-            self._volume_function = _tetrahedron_volume
 
         if self._tdim == 2:
             # Dirichlet BC
@@ -168,129 +582,28 @@ class PoissonHMM:
                 | np.isclose(x[1], bottom)
                 | np.isclose(x[1], top),
             )
-            self._reference_evaluation_point = REFERENCE_EVALUATION_POINT_2D
-            self._volume_function = _triangle_area
 
         dofs = fem.locate_dofs_topological(
             self._V_macro, entity_dim=(self._msh.topology.dim - 1), entities=facets
         )
         bc = fem.dirichletbc(value=PETSc.ScalarType(0), dofs=dofs, V=self._V_macro)
         self._bcs = [bc]
-        self._num_dofs = self._V_macro.dofmap.index_map.size_global
-        self._num_local_dofs = self._V_macro.dofmap.index_map.size_local
-        self._A = PETSc.Mat().createAIJ(
-            ((self._num_local_dofs, self._num_dofs), (self._num_local_dofs, self._num_dofs))
-        )
-        self._logger = logging.getLogger(__name__)
 
-        if petsc_options_cell_problem is None:
-            petsc_options_cell_problem = {
-                "ksp_atol": 1e-12,  # if this is too low than the solver will get stuck on non-periodic problems
-            }
-        self._petsc_options_cell_problem = petsc_options_cell_problem
-        self._solver = PETSc.KSP().create(self._comm)
-        if petsc_options_global_solve is not None:
-            opts = PETSc.Options()
+    def _setup_macro_function_space(self) -> fem.FunctionSpace:
+        return fem.functionspace(self._msh, ("Lagrange", 1))
 
-            for k, v in petsc_options_global_solve.items():
-                opts[k] = v
+    def _setup_micro_function_space(self) -> fem.FunctionSpace:
+        return fem.functionspace(self._cell_mesh, ("Lagrange", 1))
 
-            self._solver.setFromOptions()
-
-            # Tidy up global options
-            for k in petsc_options_global_solve.keys():
-                del opts[k]
-
-    @property
-    def function_space(self) -> fem.FunctionSpace:
-        """Function space of the macro mesh, that can be used to set Dirichlet BCs."""
-        return self._V_macro
-
-    def set_boundary_condtions(self, bcs: list[fem.DirichletBC] | fem.DirichletBC):
-        """Set new boundary conditions. This method needs to be called before solve to accomodate
-        the new boundary conditions, by default Dirichlet 0 on the whole boundary is enforced
-        for squares or cubes.
-        You can extract
-
-        This method needs to be called if the geometry is not a square or cube.
-        Args:
-            bcs (list[fem.DirichletBC]): list of boundary conditions
-        """
-        if isinstance(bcs, list):
-            self._bcs = bcs
-        else:
-            self._bcs = [bcs]
-
-    def _assemble_stiffness(self):
-        """Assembly of the stiffness matrix in parallel."""
-        if self._A.assembled:
-            return
-
-        self._setup_cell_problems()
-        num_local_cells = self._V_macro.mesh.topology.index_map(self._tdim).size_local
-
-        # cell problem loop
-        for local_cell_index in tqdm(range(num_local_cells)):
-            local_dofs = self._V_macro.dofmap.cell_dofs(local_cell_index)
-            global_dofs = self._V_macro.dofmap.index_map.local_to_global(local_dofs).astype(
-                PETSc.IntType
-            )
-            # local assembly for one cell
-            S_loc = self._compute_local_stiffness(local_cell_index)
-            if np.any(np.isnan(S_loc)):
-                self._logger.error(
-                    f"Something went wrong when calculating local matrix on cell {local_cell_index}"
-                )
-            # global assembly
-            self._A.setValues(
-                global_dofs, global_dofs, S_loc.flatten(), addv=PETSc.InsertMode.ADD_VALUES
-            )
-
-    def _setup_cell_problems(self) -> None:
-        """Set up various structures used throughout all cell problems.
-
-        Since all ufl forms are precompiled the mathematical description of the cell problem
-        and stiffness assembly are in this function.
-        If you want to adapt the HMM to your problem, you can simply overwrite this method and
-        change the ufl forms.
-
-        Notes:
-            This method sets up objects that are used through the cell problems:
-            - function spaces and functions on the cell mesh
-            - periodic boundary conditions
-            - ufl forms containing the cell problem and local stiffness assembly
-                - corresponding constants
-        """
-        # micro function space and periodic boundary conditions
-        self._V_micro = fem.functionspace(self._cell_mesh, ("Lagrange", 1))
-        self._mpc = helpers.create_periodic_boundary_conditions(self._V_micro, self._bcs)
-        self._points_micro = self._V_micro.tabulate_dof_coordinates()
-        self._v_tilde = ufl.TrialFunction(self._V_micro)
-        self._z = ufl.TestFunction(self._V_micro)
-        self._y = ufl.SpatialCoordinate(self._cell_mesh)
-        self._grad_v_micro = fem.Constant(self._cell_mesh, np.zeros((self._tdim,)))
-        # wrap x in A(x, y) in a Constant to avoid recompilation
-        self._x_macro = fem.Constant(
-            self._cell_mesh, np.zeros((self._cell_mesh.geometry.x.shape[1],))
-        )
-        self._A_micro = self._coeff(self._x_macro, self._y)
-        # precompile cell problem LHS and RHS
-        self._a_micro_compiled = fem.form(
+    def _setup_cell_problem_forms(self) -> tuple[fem.Form, fem.Form, list[fem.Form]]:
+        a_micro_compiled = fem.form(
             ufl.inner(self._A_micro * ufl.grad(self._v_tilde), ufl.grad(self._z)) * ufl.dx
         )
-        self._L_micro_compiled = fem.form(
+        L_micro_compiled = fem.form(
             -ufl.inner(self._A_micro * self._grad_v_micro, ufl.grad(self._z)) * ufl.dx
         )
-        # setup of macro functions once for all cell problems
-        self._v_macro = fem.Function(self._V_macro)
-        self._grad_v_macro = fem.Expression(
-            ufl.grad(self._v_macro), self._reference_evaluation_point
-        )
-        # setup of placeholder functions for the micro functions
-        self._v_micros = [fem.Function(self._V_micro) for _ in range(self._num_basis_functions)]
-        # placeholders for the correctors
-        self._correctors = [fem.Function(self._V_micro) for _ in range(self._num_basis_functions)]
-        self._local_stiffness_forms = [
+
+        local_stiffness_forms = [
             [
                 fem.form(
                     ufl.inner(
@@ -300,189 +613,12 @@ class PoissonHMM:
                     )
                     * ufl.dx
                 )
-                for i in range(self._num_basis_functions)
+                for i in range(self._num_basis_functions_per_cell)
             ]
-            for j in range(self._num_basis_functions)
+            for j in range(self._num_basis_functions_per_cell)
         ]
 
-    def _compute_local_stiffness(
-        self, cell_index: int
-    ) -> np.ndarray[tuple[int, int], np.dtype[float]]:
-        """Computes the local stiffness matrix on one element by solving the cell problem for all
-        basis functions on that cell.
-        All computation is done on one process and no communication takes place between the processes.
-
-        Args:
-            cell_index: process-local index of the cell for which the homogenized coefficient
-            is to be approximated
-
-        Returns:
-            np.ndarray: local stiffness matrix
-        """
-        local_dofs = self._V_macro.dofmap.cell_dofs(cell_index)
-        points = self._V_macro.tabulate_dof_coordinates()[local_dofs]
-        c_t = np.mean(points, axis=0)
-        # update the x value in the precompiled forms containing A
-        self._x_macro.value = c_t
-
-        for i, local_dof in enumerate(local_dofs):
-            self._v_macro.x.array[:] = 0.0
-            self._v_macro.x.array[local_dof] = 1.0
-            self._interpolate_macro_to_micro(
-                self._v_macro, self._grad_v_macro, cell_index, self._v_micros[i]
-            )
-            self._calculate_corrector(
-                cell_index,
-                self._correctors[i],
-            )
-
-        # local stiffness matrix
-        S_loc = np.zeros((self._num_basis_functions, self._num_basis_functions))
-        for i in range(S_loc.shape[0]):
-            for j in range(S_loc.shape[1]):
-                S_loc[i, j] = fem.assemble_scalar(self._local_stiffness_forms[i][j])
-
-        # scale contribution
-        cell_area = self._volume_function(points)
-        Y_area = 1
-        return S_loc * cell_area / Y_area
-
-    def _interpolate_macro_to_micro(
-        self,
-        v_macro: fem.Function,
-        grad_v_macro_expr: fem.Expression,
-        cell_index: int,
-        v_micro: fem.Function = None,
-    ) -> fem.Function:
-        """Interpolates a function from the macro mesh onto the micro mesh.
-
-        Since we know that the micro domain is contained inside one macro cell,
-        we can avoid dolfinx interpolate_nonmatching and instead rely on evaluating directly.
-
-        Notes:
-            This function has the side aeffect of updating the constant self._grad_v_micro
-            that is used in the precompiled form for the cell problem.
-
-        Args:
-            v_macro: Macro function
-            grad_v_macro_expr: Expression for the gradient of the macroscopic function
-            cell_index: cell index on which the cell problem is solved
-            v_micro (optional): Micro function, if none is provided one is created
-
-        """
-        if v_micro is None:
-            v_micro = fem.Function(self._V_micro)
-        # v_micro.interpolate_nonmatching(v_macro, interpolation_cells, interpolation_data) # DOES NOT WORK IN PARALLEL
-        cells = np.full(self._points_micro.shape[0], cell_index, dtype=np.int32)
-        v_micro.x.array[:] = v_macro.eval(self._points_micro, cells=cells).flatten()
-
-        # update gradient constant in compiled form
-        self._grad_v_micro.value = grad_v_macro_expr.eval(self._msh, [cell_index]).flatten()
-        return v_micro
-
-    def _calculate_corrector(
-        self,
-        cell_index: int,
-        corrector: fem.Function = None,
-    ):
-        """Calculates the corrector by solving the cell problem.
-
-        Notes:
-            The micro function for which the corrector should be calculated does not show up,
-            since the precompiled form uses a contant that is updated in _interpolate_macro_to_micro.
-
-        Args:
-            cell_index: the process-local index of the cell
-                on which the cell problem should be solved
-            corrector (optional): function on the micro mesh that stores the corrector,
-                if none is provided one is created
-        """
-        if corrector is None:
-            corrector = fem.Function(self._V_micro)
-
-        problem = cell_problem.PeriodicLinearProblem(
-            self._a_micro_compiled,
-            self._L_micro_compiled,
-            self._mpc,
-            petsc_options=self._petsc_options_cell_problem,
-        )
-        v_tilde_sol = problem.solve()
-        if problem._solver.getConvergedReason() < 0:
-            self._logger.error(
-                f"Something went wrong in the cell problem solving for cell {cell_index}. PETSc solver failed with reason {problem._solver.getConvergedReason()}"
-            )
-        corrector.x.array[:] = v_tilde_sol.x.array
-        return corrector
-
-    def solve(self) -> fem.Function:
-        """Assemble the LHS, RHS and solve the problem
-
-        This method assembles the HMM stiffness matrix, so depending on the problem it might
-        run for some time.
-        """
-        # assemble LHS matrix
-        self._assemble_stiffness()
-        self._A.assemble()
-
-        # assemble rhs
-        with self._b.localForm() as b_local:
-            b_local.set(0)
-        with self._b.localForm() as b_local:
-            _assemble_vector_array(b_local.array_w, self._L, None, None)
-        self._b.ghostUpdate(
-            addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE
-        )  # accumulate ghost values on owning process
-        self._b.assemble()
-
-        # enforce Dirichlet BC by lifting
-        for bc in self._bcs:
-            local_bc_dofs, ghost_index = bc.dof_indices()  # process local
-            global_bc_dofs = self._V_macro.dofmap.index_map.local_to_global(
-                local_bc_dofs[:ghost_index]
-            ).astype(PETSc.IntType)
-            # create vector for lifting
-            u_bc = self._u.copy()
-            u_bc.x.array[:] = 0.0
-            u_bc.x.array[local_bc_dofs] = bc.g.value
-            u_bc.x.scatter_forward()
-            b_lift = self._A.createVecLeft()
-            self._A.mult(u_bc.x.petsc_vec, b_lift)
-
-            bc.set(self._b)
-            self._b.axpy(-1, b_lift)
-            self._A.zeroRowsColumns(global_bc_dofs, diag=1.0)
-            self._b.setValues(global_bc_dofs, np.full(global_bc_dofs.shape, bc.g.value))
-            self._b.assemble()
-
-        self._solver.setOperators(self._A)
-
-        self._solver.solve(self._b, self._x)
-        if self._solver.getConvergedReason() < 0:
-            self._logger.error(
-                f"Something went wrong in the global problem solve. PETSc solver failed with reason {self._solver.getConvergedReason()}"
-            )
-        self._u.x.scatter_forward()  # make sure ghosts are updated so plotting works correctly
-        return self._u
-
-    def plot_solution(self, u: fem.Function | None = None):
-        """Simple plot of the solution using pyvista.
-
-        Solve needs to be run before calling this.
-        On parallel methods each process only plots the local part.
-
-        """
-        if u is None:
-            u = self._u
-        cells, types, x = plot.vtk_mesh(self._V_macro)
-        grid = pv.UnstructuredGrid(cells, types, x)
-        grid.point_data["u"] = u.x.array
-        grid.set_active_scalars("u")
-        plotter = pv.Plotter(notebook=True)
-        plotter.add_mesh(grid, show_edges=True)
-        warped = grid.warp_by_scalar()
-        plotter.add_mesh(warped)
-
-        plotter.show()
+        return a_micro_compiled, L_micro_compiled, local_stiffness_forms
 
 
 class PoissonStratifiedHMM(PoissonHMM):
@@ -542,7 +678,7 @@ class PoissonStratifiedHMM(PoissonHMM):
         Dtheta: Callable[[fem.Constant], ufl.Form],
         petsc_options_global_solve: dict | None = None,
         petsc_options_cell_problem: dict | None = None,
-        petsc_options_prefix: str = "hommx_PoissonHMM",
+        petsc_options_prefix: str = "hommx_PoissonStratifiedHMM",
     ):
         super().__init__(
             msh,
@@ -556,57 +692,21 @@ class PoissonStratifiedHMM(PoissonHMM):
         )
         self._Dtheta = Dtheta
 
-    def _setup_cell_problems(self) -> None:
-        """Set up various structures used throughout all cell problems.
-
-        Since all ufl forms are precompiled the mathematical description of the cell problem
-        and stiffness assembly are in this function.
-        If you want to adapt the HMM to your problem, you can simply overwrite this method and
-        change the ufl forms.
-
-        Notes:
-            This method sets up objects that are used through the cell problems:
-            - function spaces and functions on the cell mesh
-            - periodic boundary conditions
-            - ufl forms containing the cell problem and local stiffness assembly
-                - corresponding constants
-        """
-        # micro function space and periodic boundary conditions
-        self._V_micro = fem.functionspace(self._cell_mesh, ("Lagrange", 1))
-        self._mpc = helpers.create_periodic_boundary_conditions(self._V_micro, self._bcs)
-        self._points_micro = self._V_micro.tabulate_dof_coordinates()
-        self._v_tilde = ufl.TrialFunction(self._V_micro)
-        self._z = ufl.TestFunction(self._V_micro)
-        self._y = ufl.SpatialCoordinate(self._cell_mesh)
-        self._grad_v_micro = fem.Constant(self._cell_mesh, np.zeros((2,)))
-        # wrap x in A(x, y) in a Constant to avoid recompilation
-        self._x_macro = fem.Constant(
-            self._cell_mesh, np.zeros((self._cell_mesh.geometry.x.shape[1],))
-        )
-        self._A_micro = self._coeff(self._x_macro, self._y)
+    def _setup_cell_problem_forms(self) -> tuple[fem.Form, fem.Form, list[fem.Form]]:
         self._Dthetax = self._Dtheta(self._x_macro)
-        # precompile cell problem LHS and RHS
-        self._a_micro_compiled = fem.form(
+        a_micro_compiled = fem.form(
             ufl.inner(
                 self._A_micro * self._Dthetax * ufl.grad(self._v_tilde),
                 self._Dthetax * ufl.grad(self._z),
             )
             * ufl.dx
         )
-        self._L_micro_compiled = fem.form(
+        L_micro_compiled = fem.form(
             -ufl.inner(self._A_micro * self._grad_v_micro, self._Dthetax * ufl.grad(self._z))
             * ufl.dx
         )
-        # setup of macro functions once for all cell problems
-        self._v_macro = fem.Function(self._V_macro)
-        self._grad_v_macro = fem.Expression(
-            ufl.grad(self._v_macro), self._reference_evaluation_point
-        )
-        # setup of placeholder functions for the micro functions
-        self._v_micros = [fem.Function(self._V_micro) for _ in range(self._num_basis_functions)]
-        # placeholders for the correctors
-        self._correctors = [fem.Function(self._V_micro) for _ in range(self._num_basis_functions)]
-        self._local_stiffness_forms = [
+
+        local_stiffness_forms = [
             [
                 fem.form(
                     ufl.inner(
@@ -622,13 +722,15 @@ class PoissonStratifiedHMM(PoissonHMM):
                     )
                     * ufl.dx
                 )
-                for i in range(self._num_basis_functions)
+                for i in range(self._num_basis_functions_per_cell)
             ]
-            for j in range(self._num_basis_functions)
+            for j in range(self._num_basis_functions_per_cell)
         ]
 
+        return a_micro_compiled, L_micro_compiled, local_stiffness_forms
 
-class LinearElasticityHMM:
+
+class LinearElasticityHMM(BaseHMM):
     r"""Solver for the Multi-Scale Linear Elasticity problem using the HMM.
 
     This class implements the Heterogenous-Multi-Scale Method for a Poisson problem.
@@ -683,208 +785,59 @@ class LinearElasticityHMM:
         self,
         msh: mesh.Mesh,
         A: Callable[[fem.Constant, ufl.SpatialCoordinate], ufl.Form],
-        f: ufl.form,
+        f: Callable,
         msh_micro: mesh.Mesh,
         eps: float,
         petsc_options_global_solve: dict | None = None,
         petsc_options_cell_problem: dict | None = None,
         petsc_options_prefix: str = "hommx_LinearElasticityHMM",
     ):
-        r"""Initializes the solver, meshes and boundary condtions.
+        r"""Initializes the solver, meshes and boundary conditions.
 
         Args:
-            msh: The macro mesh, on which we want to solve the oscillatory Poisson equation.
-                This mesh can live on MPI.COMM_WORLD and the cell problems are automatically solved
-                on each process in parallel.
-            A: The coefficient, it should be callable like: `A(x)(y)`,
-                where $x$ is a spatial coordinate on the macro mesh (the cell center $c_T$)
-                and $y$ is a ufl.SpatialCoordinate on the microscopic mesh,
-                that is passed to dolfinx to solve the cell problem.
-                A needs to be 1-periodic in y, at least for the theory to work.
-            f: The right hand side of the Poisson problem.
-            msh_micro (mesh.Mesh): The microscopic mesh, this needs to be the unit-square.
-                Further it needs to live on MPI.COMM_SELF, since every process owns a whole copy
-                of the microscopic mesh. If any other communicator but MPI.COMM_SELF is used the
-                results will most likely be rubish.
-            eps: $\varepsilon$, the microscopic scaling. Note that this needs to be small enough,
-                so that the cells live entirely within their corresponding element.
-                If this is not the case, results may be rubish.
-            petsc_options_global_solve (optional): PETSc solver options for the global solver, see
-                PETSC documentation.
-            petsc_options_cell_problem (optional): PETSc solver options for the global solver, see
-                PETSC documentation.
-            petsc_options_prefix (optional): options prefix used for PETSc options. Defaults to "hommx_PoissonHMM".
+            msh: The macro mesh, on which we want to solve the oscillatory PDE.
+            A: The coefficient, should be callable like: `A(x)(y)`,
+                where x is a spatial coordinate on the macro mesh (the cell center c_T)
+                and y is a ufl.SpatialCoordinate on the microscopic mesh.
+                A needs to be 1-periodic in y.
+            f: The right hand side of the problem.
+            msh_micro: The microscopic mesh, needs to be the unit cell.
+                Should live on MPI.COMM_SELF since each process owns a whole copy.
+            eps: The microscopic scaling parameter.
+            petsc_options_global_solve: PETSc solver options for the global solver.
+            petsc_options_cell_problem: PETSc solver options for the cell problem solver.
+            petsc_options_prefix: Options prefix used for PETSc options.
         """
-        self._msh = msh
-        self._tdim = self._msh.topology.dim
-        if self._tdim not in (2, 3):
-            raise ValueError("Topology should be 3D or 2D")
-        if self._tdim != self._msh.geometry.dim:
-            raise ValueError(
-                "Topological dimension is different from geometrical dimension. Currently surfaces in 3D are not supported."
-            )
-        if msh_micro.topology.dim != msh_micro.geometry.dim:
-            raise ValueError(
-                "Topological dimension is different from geometrical dimension for micro mesh."
-            )
-        if self._tdim != msh_micro.topology.dim:
-            raise ValueError("Micro and macro mesh should have the same dimensionality.")
-        self._comm = msh.comm
-        self._coeff = A
-        self._f = f
-        self._eps = eps
-        self._cell_mesh = msh_micro  # create a copy of the mesh, just in case
-        self._V_macro = fem.functionspace(
-            self._msh, ("Lagrange", 1, (self._tdim,))
-        )  # Macroscopic function space
-        self._v_test = ufl.TestFunction(self._V_macro)
-        self._x = ufl.SpatialCoordinate(self._msh)
-        L = ufl.inner(f(self._x), self._v_test) * ufl.dx
-        self._L = fem.form(L)
-        self._b = create_vector(self._L)
-        self._u = fem.Function(self._V_macro)
-        self._x = la.create_petsc_vector_wrap(self._u.x)
-        self._bs = self._V_macro.dofmap.index_map_bs
-        assert self._bs == self._tdim, (
-            "block size and topological dimension should be equal. Please open an issue if you see this."
+        super().__init__(
+            msh,
+            A,
+            f,
+            msh_micro,
+            eps,
+            petsc_options_global_solve,
+            petsc_options_cell_problem,
+            petsc_options_prefix,
         )
-        self._bcs = None
 
-        # setup 2D vs 3D differences
-        if self._tdim == 3:
-            self._reference_evaluation_point = REFERENCE_EVALUATION_POINT_3D
-            self._volume_function = _tetrahedron_volume
+    def _setup_macro_function_space(self) -> fem.FunctionSpace:
+        return fem.functionspace(self._msh, ("Lagrange", 1, (self._tdim,)))
 
-        if self._tdim == 2:
-            self._reference_evaluation_point = REFERENCE_EVALUATION_POINT_2D
-            self._volume_function = _triangle_area
+    def _setup_micro_function_space(self) -> fem.FunctionSpace:
+        return fem.functionspace(self._cell_mesh, ("Lagrange", 1, (self._tdim,)))
 
-        self._num_basis_functions = (
-            self._tdim + 1
-        ) * self._bs  # 3 basis functions for triangles, 4 for tetrahedra times block size
-        self._num_dofs = self._V_macro.dofmap.index_map.size_global * self._bs
-        self._num_local_dofs = self._V_macro.dofmap.index_map.size_local * self._bs
-        self._A = PETSc.Mat().createAIJ(
-            ((self._num_local_dofs, self._num_dofs), (self._num_local_dofs, self._num_dofs))
-        )
-        self._logger = logging.getLogger(__name__)
-
-        if petsc_options_cell_problem is None:
-            petsc_options_cell_problem = {
-                "ksp_atol": 1e-12,  # if this is too low than the solver will get stuck on non-periodic problems
-            }
-        self._petsc_options_cell_problem = petsc_options_cell_problem
-        self._solver = PETSc.KSP().create(self._comm)
-        if petsc_options_global_solve is not None:
-            opts = PETSc.Options()
-
-            for k, v in petsc_options_global_solve.items():
-                opts[k] = v
-
-            self._solver.setFromOptions()
-
-            # Tidy up global options
-            for k in petsc_options_global_solve.keys():
-                del opts[k]
-
-    @property
-    def function_space(self) -> fem.FunctionSpace:
-        """Function space of the macro mesh, that can be used to set Dirichlet BCs."""
-        return self._V_macro
-
-    def set_boundary_condtions(self, bcs: list[fem.DirichletBC] | fem.DirichletBC):
-        """Set new boundary conditions. This method needs to be called before solve to accomodate
-        the new boundary conditions, by default Dirichlet 0 on the whole boundary is enforced
-        for squares or cubes.
-        You can extract
-
-        This method needs to be called if the geometry is not a square or cube.
-        Args:
-            bcs (list[fem.DirichletBC]): list of boundary conditions
-        """
-        if isinstance(bcs, list):
-            self._bcs = bcs
-        else:
-            self._bcs = [bcs]
-
-    def _assemble_stiffness(self):
-        """Assembly of the stiffness matrix in parallel."""
-        if self._A.assembled:
-            return
-
-        self._setup_cell_problems()
-        num_local_cells = self._V_macro.mesh.topology.index_map(self._tdim).size_local
-
-        # cell problem loop
-        for local_cell_index in tqdm(range(num_local_cells)):
-            local_dofs = self._V_macro.dofmap.cell_dofs(local_cell_index)
-            global_dofs = self._V_macro.dofmap.index_map.local_to_global(local_dofs).astype(
-                PETSc.IntType
-            )
-            # actual matrix entries are unrolled
-            global_dofs_unrolled = _unroll_dofs(global_dofs, self._bs)
-            # local assembly for one cell
-            S_loc = self._compute_local_stiffness(local_cell_index)
-            if np.any(np.isnan(S_loc)):
-                self._logger.error(
-                    f"Something went wrong when calculating local matrix on cell {local_cell_index}"
-                )
-            # global assembly
-            self._A.setValues(
-                global_dofs_unrolled,
-                global_dofs_unrolled,
-                S_loc.flatten(),
-                addv=PETSc.InsertMode.ADD_VALUES,
-            )
-
-    def _setup_cell_problems(self) -> None:
-        """Set up various structures used throughout all cell problems.
-
-        Since all ufl forms are precompiled the mathematical description of the cell problem
-        and stiffness assembly are in this function.
-        If you want to adapt the HMM to your problem, you can simply overwrite this method and
-        change the ufl forms.
-
-        Notes:
-            This method sets up objects that are used through the cell problems:
-            - function spaces and functions on the cell mesh
-            - periodic boundary conditions
-            - ufl forms containing the cell problem and local stiffness assembly
-                - corresponding constants
-        """
-        # micro function space and periodic boundary conditions
-        self._V_micro = fem.functionspace(self._cell_mesh, ("Lagrange", 1, (self._tdim,)))
-        self._mpc = helpers.create_periodic_boundary_conditions(self._V_micro, self._bcs)
-        self._points_micro = self._V_micro.tabulate_dof_coordinates()
-        self._v_tilde = ufl.TrialFunction(self._V_micro)
-        self._z = ufl.TestFunction(self._V_micro)
-        self._y = ufl.SpatialCoordinate(self._cell_mesh)
-        self._grad_v_micro = fem.Constant(self._cell_mesh, np.zeros((self._tdim, self._bs)))
-
+    def _setup_cell_problem_forms(self) -> tuple[fem.Form, fem.Form, list[fem.Form]]:
         def e(u):
             return 1 / 2 * (ufl.grad(u) + ufl.transpose(ufl.grad(u)))
 
-        # wrap x in A(x, y) in a Constant to avoid recompilation
-        self._x_macro = fem.Constant(
-            self._cell_mesh, np.zeros((self._cell_mesh.geometry.x.shape[1],))
-        )
-        self._A_micro = self._coeff(self._x_macro, self._y)
         i, j, k, l = ufl.indices(4)
-        # precompile cell problem LHS and RHS
-        self._a_micro_compiled = fem.form(
+
+        a_micro_compiled = fem.form(
             ((self._A_micro)[i, j, k, l] * e(self._v_tilde)[k, l] * e(self._z)[i, j]) * ufl.dx
         )
-        self._L_micro_compiled = fem.form(
+        L_micro_compiled = fem.form(
             -((self._A_micro)[i, j, k, l] * self._grad_v_micro[k, l] * e(self._z)[i, j]) * ufl.dx
         )
-        # setup of macro functions once for all cell problems
-        self._v_macro = fem.Function(self._V_macro)
-        self._strain_v_macro = fem.Expression(e(self._v_macro), self._reference_evaluation_point)
-        # setup of placeholder functions for the micro functions
-        self._v_micros = [fem.Function(self._V_micro) for _ in range(self._num_basis_functions)]
-        # placeholders for the correctors
-        self._correctors = [fem.Function(self._V_micro) for _ in range(self._num_basis_functions)]
-        self._local_stiffness_forms = [
+        local_stiffness_forms = [
             [
                 fem.form(
                     (
@@ -894,225 +847,9 @@ class LinearElasticityHMM:
                     )
                     * ufl.dx
                 )
-                for i_loop in range(self._num_basis_functions)
+                for i_loop in range(self._num_basis_functions_per_cell)
             ]
-            for j_loop in range(self._num_basis_functions)
+            for j_loop in range(self._num_basis_functions_per_cell)
         ]
 
-    def _compute_local_stiffness(
-        self, cell_index: int
-    ) -> np.ndarray[tuple[int, int], np.dtype[float]]:
-        """Computes the local stiffness matrix on one element by solving the cell problem for all
-        basis functions on that cell.
-        All computation is done on one process and no communication takes place between the processes.
-
-        Args:
-            cell_index: process-local index of the cell for which the homogenized coefficient
-            is to be approximated
-
-        Returns:
-            np.ndarray: local stiffness matrix
-        """
-        local_dofs = self._V_macro.dofmap.cell_dofs(cell_index)
-        local_dofs_unrolled = _unroll_dofs(local_dofs, self._bs)
-        points = self._V_macro.tabulate_dof_coordinates()[local_dofs]
-        c_t = np.mean(points, axis=0)
-        # update the x value in the precompiled forms containing A
-        self._x_macro.value = c_t
-
-        for i, local_dof in enumerate(local_dofs_unrolled):
-            self._v_macro.x.array[:] = 0.0
-            self._v_macro.x.array[local_dof] = 1.0
-            self._interpolate_macro_to_micro(
-                self._v_macro, self._strain_v_macro, cell_index, self._v_micros[i]
-            )
-            self._calculate_corrector(
-                cell_index,
-                self._correctors[i],
-            )
-
-        # local stiffness matrix
-        S_loc = np.zeros((self._num_basis_functions, self._num_basis_functions))
-        for i in range(S_loc.shape[0]):
-            for j in range(S_loc.shape[1]):
-                S_loc[i, j] = fem.assemble_scalar(self._local_stiffness_forms[i][j])
-
-        # scale contribution
-        cell_area = self._volume_function(points)
-        Y_area = 1
-        return S_loc * cell_area / Y_area
-
-    def _interpolate_macro_to_micro(
-        self,
-        v_macro: fem.Function,
-        grad_v_macro_expr: fem.Expression,
-        cell_index: int,
-        v_micro: fem.Function = None,
-    ) -> fem.Function:
-        """Interpolates a function from the macro mesh onto the micro mesh.
-
-        Since we know that the micro domain is contained inside one macro cell,
-        we can avoid dolfinx interpolate_nonmatching and instead rely on evaluating directly.
-
-        Notes:
-            This function has the side aeffect of updating the constant self._grad_v_micro
-            that is used in the precompiled form for the cell problem.
-
-        Args:
-            v_macro: Macro function
-            grad_v_macro_expr: Expression for the gradient of the macroscopic function
-            cell_index: cell index on which the cell problem is solved
-            v_micro (optional): Micro function, if none is provided one is created
-
-        """
-        if v_micro is None:
-            v_micro = fem.Function(self._V_micro)
-        # v_micro.interpolate_nonmatching(v_macro, interpolation_cells, interpolation_data) # DOES NOT WORK IN PARALLEL
-        cells = np.full(self._points_micro.shape[0], cell_index, dtype=np.int32)
-        v_micro.x.array[:] = v_macro.eval(self._points_micro, cells=cells).flatten()
-
-        # update gradient constant in compiled form
-        self._grad_v_micro.value = grad_v_macro_expr.eval(self._msh, [cell_index]).reshape(
-            (self._tdim, self._tdim)
-        )
-        return v_micro
-
-    def _calculate_corrector(
-        self,
-        cell_index: int,
-        corrector: fem.Function = None,
-    ):
-        """Calculates the corrector by solving the cell problem.
-
-        Notes:
-            The micro function for which the corrector should be calculated does not show up,
-            since the precompiled form uses a contant that is updated in _interpolate_macro_to_micro.
-
-        Args:
-            cell_index: the process-local index of the cell
-                on which the cell problem should be solved
-            corrector (optional): function on the micro mesh that stores the corrector,
-                if none is provided one is created
-        """
-        if corrector is None:
-            corrector = fem.Function(self._V_micro)
-
-        problem = cell_problem.PeriodicLinearProblem(
-            self._a_micro_compiled,
-            self._L_micro_compiled,
-            self._mpc,
-            petsc_options=self._petsc_options_cell_problem,
-        )
-        v_tilde_sol = problem.solve()
-        if problem._solver.getConvergedReason() < 0:
-            self._logger.error(
-                f"Something went wrong in the cell problem solving for cell {cell_index}. PETSc solver failed with reason {problem._solver.getConvergedReason()}"
-            )
-        corrector.x.array[:] = v_tilde_sol.x.array
-        return corrector
-
-    def solve(self) -> fem.Function:
-        """Assemble the LHS, RHS and solve the problem
-
-        This method assembles the HMM stiffness matrix, so depending on the problem it might
-        run for some time.
-        """
-        if self._bcs is None:
-            raise ValueError("You need to set Dirichlet Boundary conditions first.")
-        # assemble LHS matrix
-        self._assemble_stiffness()
-        self._A.assemble()
-
-        # assemble rhs
-        with self._b.localForm() as b_local:
-            b_local.set(0)
-        with self._b.localForm() as b_local:
-            _assemble_vector_array(b_local.array_w, self._L, None, None)
-        self._b.ghostUpdate(
-            addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE
-        )  # accumulate ghost values on owning process
-        self._b.assemble()
-
-        # enforce Dirichlet BC by lifting
-        for bc in self._bcs:
-            local_bc_dofs, ghost_index = bc.dof_indices()  # process local
-            global_bc_dofs = _local_to_global_unrolled(
-                local_bc_dofs[:ghost_index], self._V_macro
-            ).astype(PETSc.IntType)
-            u_bc = self._u.copy()
-            u_bc.x.array[:] = 0.0
-            u_bc.x.array[local_bc_dofs] = np.tile(
-                bc.g.value, local_bc_dofs.shape[0] // bc.g.value.shape[0]
-            )
-            u_bc.x.scatter_forward()
-            b_lift = self._A.createVecLeft()
-            self._A.mult(u_bc.x.petsc_vec, b_lift)
-
-            bc.set(self._b)
-            self._b.axpy(-1, b_lift)
-            self._A.zeroRowsColumns(global_bc_dofs, diag=1.0)
-            self._b.setValues(
-                global_bc_dofs, np.tile(bc.g.value, local_bc_dofs.shape[0] // bc.g.value.shape[0])
-            )
-            self._b.assemble()
-
-        self._solver.setOperators(self._A)
-
-        self._solver.solve(self._b, self._x)
-        if self._solver.getConvergedReason() < 0:
-            self._logger.error(
-                f"Something went wrong in the global problem solve. PETSc solver failed with reason {self._solver.getConvergedReason()}"
-            )
-        self._u.x.scatter_forward()  # make sure ghosts are updated so plotting works correctly
-        return self._u
-
-    def plot_solution(self, u: fem.Function | None = None):
-        """Simple plot of the solution using pyvista.
-
-        Solve needs to be run before calling this.
-        On parallel methods each process only plots the local part.
-
-        """
-        if u is None:
-            u = self._u
-        cells, types, x = plot.vtk_mesh(self._V_macro)
-        grid = pv.UnstructuredGrid(cells, types, x)
-        grid.point_data["u"] = u.x.array
-        grid.set_active_scalars("u")
-        plotter = pv.Plotter(notebook=True)
-        plotter.add_mesh(grid, show_edges=True)
-        warped = grid.warp_by_scalar()
-        plotter.add_mesh(warped)
-
-        plotter.show()
-
-
-def _triangle_area(points):
-    return 0.5 * np.linalg.norm(np.cross(points[1] - points[0], points[2] - points[0]))
-
-
-def _tetrahedron_volume(points):
-    return (
-        np.abs(np.linalg.det([points[1] - points[0], points[2] - points[0], points[3] - points[0]]))
-        / 6.0
-    )
-
-
-def _unroll_dofs(dofs: np.ndarray, bs: int, dtype=PETSc.IntType):
-    """unrolls blocked dofs into array indices"""
-    dofs = np.asarray(dofs)
-    assert len(dofs.shape) == 1, "Only flattened dof arrays allowed"
-    ret = np.array(
-        [[dofs[i] * bs + k for k in range(bs)] for i in range(len(dofs))], dtype=dtype
-    ).flatten()
-    return ret
-
-
-def _local_to_global_unrolled(dofs: np.ndarray, V: fem.FunctionSpace):
-    """maps local to global dofs, for unrolled dofs."""
-    local_dofs_rerolled = dofs // V.dofmap.index_map_bs
-    offsets = dofs % V.dofmap.index_map_bs
-    global_dofs_unrolled = (
-        V.dofmap.index_map.local_to_global(local_dofs_rerolled) * V.dofmap.index_map_bs + offsets
-    )
-    return global_dofs_unrolled
+        return a_micro_compiled, L_micro_compiled, local_stiffness_forms
