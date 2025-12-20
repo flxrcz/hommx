@@ -174,7 +174,7 @@ class BaseHMM(ABC):
 
     @abstractmethod
     def _setup_micro_function_space(self) -> fem.FunctionSpace:
-        """Setup macro-scale function space. Must be implemented by subclasses."""
+        """Setup micro-scale function space. Must be implemented by subclasses."""
         pass
 
     def _setup_cell_problems(self) -> None:
@@ -225,12 +225,12 @@ class BaseHMM(ABC):
     @abstractmethod
     def _setup_cell_problem_forms(self) -> tuple[fem.Form, fem.Form, list[fem.Form]]:
         """Setup cell problem forms. Must be implemented by subclasses.
-        Please use the variables in _setup_cell_problems inside those forms for efficiency.
-        Returns
-            a: lhs form for the cell problem
-            L: rhs form for the cell problem
-            S: multidimensional list, s.t. S[i][j] is the form that calculates the $S_{ij}$-entry in the local stiffness matrix
-
+            Please use the variables in _setup_cell_problems inside those forms for efficiency.
+            Returns:
+        tuple: A tuple containing:
+            - a: lhs form for the cell problem
+            - L: rhs form for the cell problem
+            - S: multidimensional list, s.t. S[i][j] is the form that calculates the $S_{ij}$-entry in the local stiffness matrix
         """
         pass
 
