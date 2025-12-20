@@ -239,7 +239,7 @@ class BaseHMM(ABC):
         """Function space of the macro mesh."""
         return self._V_macro
 
-    def set_boundary_condtions(self, bcs: list[fem.DirichletBC] | fem.DirichletBC):
+    def set_boundary_conditions(self, bcs: list[fem.DirichletBC] | fem.DirichletBC):
         """Set boundary conditions.
 
         Args:
@@ -437,12 +437,6 @@ class BaseHMM(ABC):
 
         self._u.x.scatter_forward()
         return self._u
-
-    def _get_global_bc_dofs(self, local_bc_dofs, ghost_index):
-        """Get global BC DOFs. Override in subclasses if needed."""
-        return self._V_macro.dofmap.index_map.local_to_global(local_bc_dofs[:ghost_index]).astype(
-            PETSc.IntType
-        )
 
     def plot_solution(self, u: fem.Function | None = None):
         """Simple plot of the solution using pyvista.
@@ -733,7 +727,7 @@ class PoissonStratifiedHMM(PoissonHMM):
 class LinearElasticityHMM(BaseHMM):
     r"""Solver for the Multi-Scale Linear Elasticity problem using the HMM.
 
-    This class implements the Heterogenous-Multi-Scale Method for a Poisson problem.
+    This class implements the Heterogenous-Multi-Scale Method for a Linear elasticity problem.
     We want to solve the weak formulation of the Linear elasticity problem:
 
     Note that in this case $A = A_{ijkl}$ is a fourth order tensor and $e(u)$ is the strain of u
@@ -745,7 +739,7 @@ class LinearElasticityHMM(BaseHMM):
     $$
 
     Note that we do not impose any Boundary condition by default.
-    They have to be set by the user using [`set_boundary_condtions`][hommx.hmm.LinearElasticityHMM.set_boundary_condtions]
+    They have to be set by the user using [`set_boundary_conditions`][hommx.hmm.LinearElasticityHMM.set_boundary_conditions]
 
     We do this by approximating the homogenized coefficient on every cell and
     using the adapted bilinear form
