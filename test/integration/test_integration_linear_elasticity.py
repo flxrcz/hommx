@@ -136,7 +136,7 @@ def test_linear_elasticity_2d(
         fem.locate_dofs_topological(lehmm.function_space, fdim, boundary_facets),
         lehmm.function_space,
     )
-    lehmm.set_boundary_condtions(bc)
+    lehmm.set_boundary_conditions(bc)
 
     u_lehmm = lehmm.solve()
 
@@ -279,7 +279,7 @@ def test_linear_elasticity_3d(
         fem.locate_dofs_topological(lehmm.function_space, fdim, boundary_facets),
         lehmm.function_space,
     )
-    lehmm.set_boundary_condtions(bc)
+    lehmm.set_boundary_conditions(bc)
 
     u_lehmm = lehmm.solve()
 
