@@ -134,7 +134,7 @@ class BaseHMM(ABC):
 
         # Setup matrix dimensions
         self._num_basis_functions_per_cell = (
-            self._tdim + 1
+            self._V_macro.dofmap.dof_layout.num_dofs
         ) * self._bs  # 3 basis functions for triangles, 4 for tetrahedra times block size
         self._num_global_dofs = self._V_macro.dofmap.index_map.size_global * self._bs
         self._num_local_dofs = self._V_macro.dofmap.index_map.size_local * self._bs
@@ -344,7 +344,11 @@ class BaseHMM(ABC):
         if v_micro is None:
             v_micro = fem.Function(self._V_micro)
         cells = np.full(self._points_micro.shape[0], cell_index, dtype=np.int32)
-        v_micro.x.array[:] = v_macro.eval(self._points_micro, cells=cells).flatten()
+        c_t = self._x_macro.value
+        micro_center = np.mean(self._points_micro, axis=0)
+        v_micro.x.array[:] = v_macro.eval(
+            (self._points_micro - micro_center) * self._eps + c_t, cells=cells
+        ).flatten()
 
         # update gradient constant in compiled form
         grad_eval = grad_v_macro_expr.eval(self._msh, [cell_index])
@@ -591,16 +595,24 @@ class PoissonHMM(BaseHMM):
 
     def _setup_cell_problem_forms(self) -> tuple[fem.Form, fem.Form, list[fem.Form]]:
         a_micro_compiled = fem.form(
-            ufl.inner(self._A_micro * ufl.grad(self._v_tilde), ufl.grad(self._z)) * ufl.dx
+            1
+            / self._eps**2
+            * ufl.inner(self._A_micro * ufl.grad(self._v_tilde), ufl.grad(self._z))
+            * ufl.dx
         )
         L_micro_compiled = fem.form(
-            -ufl.inner(self._A_micro * self._grad_v_micro, ufl.grad(self._z)) * ufl.dx
+            1
+            / self._eps
+            * -ufl.inner(self._A_micro * self._grad_v_micro, ufl.grad(self._z))
+            * ufl.dx
         )
 
         local_stiffness_forms = [
             [
                 fem.form(
-                    ufl.inner(
+                    1
+                    / self._eps**2
+                    * ufl.inner(
                         self._A_micro
                         * (ufl.grad(self._v_micros[i]) + ufl.grad(self._correctors[i])),
                         ufl.grad(self._v_micros[j]) + ufl.grad(self._correctors[j]),
@@ -689,21 +701,27 @@ class PoissonStratifiedHMM(PoissonHMM):
     def _setup_cell_problem_forms(self) -> tuple[fem.Form, fem.Form, list[fem.Form]]:
         self._Dthetax = self._Dtheta(self._x_macro)
         a_micro_compiled = fem.form(
-            ufl.inner(
+            1
+            / self._eps**2
+            * ufl.inner(
                 self._A_micro * self._Dthetax * ufl.grad(self._v_tilde),
                 self._Dthetax * ufl.grad(self._z),
             )
             * ufl.dx
         )
         L_micro_compiled = fem.form(
-            -ufl.inner(self._A_micro * self._grad_v_micro, self._Dthetax * ufl.grad(self._z))
+            1
+            / self._eps
+            * -ufl.inner(self._A_micro * self._grad_v_micro, self._Dthetax * ufl.grad(self._z))
             * ufl.dx
         )
 
         local_stiffness_forms = [
             [
                 fem.form(
-                    ufl.inner(
+                    1
+                    / self._eps**2
+                    * ufl.inner(
                         self._A_micro
                         * (
                             ufl.grad(self._v_micros[i])
@@ -826,15 +844,23 @@ class LinearElasticityHMM(BaseHMM):
         i, j, k, l = ufl.indices(4)
 
         a_micro_compiled = fem.form(
-            ((self._A_micro)[i, j, k, l] * e(self._v_tilde)[k, l] * e(self._z)[i, j]) * ufl.dx
+            1
+            / self._eps**2
+            * ((self._A_micro)[i, j, k, l] * e(self._v_tilde)[k, l] * e(self._z)[i, j])
+            * ufl.dx
         )
         L_micro_compiled = fem.form(
-            -((self._A_micro)[i, j, k, l] * self._grad_v_micro[k, l] * e(self._z)[i, j]) * ufl.dx
+            1
+            / self._eps
+            * -((self._A_micro)[i, j, k, l] * self._grad_v_micro[k, l] * e(self._z)[i, j])
+            * ufl.dx
         )
         local_stiffness_forms = [
             [
                 fem.form(
-                    (
+                    1
+                    / self._eps**2
+                    * (
                         self._A_micro[i, j, k, l]
                         * (e(self._v_micros[i_loop])[k, l] + e(self._correctors[i_loop])[k, l])
                         * (e(self._v_micros[j_loop])[i, j] + e(self._correctors[j_loop])[i, j])
