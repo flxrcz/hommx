@@ -588,3 +588,16 @@ class PoissonFEM:
         plotter.add_mesh(warped)
 
         plotter.show()
+
+
+def plot_fem_function(V: fem.FunctionSpace, u: fem.Function):
+    cells, types, x = plot.vtk_mesh(V)
+    grid = pv.UnstructuredGrid(cells, types, x)
+    grid.point_data["u"] = u.x.array
+    grid.set_active_scalars("u")
+    plotter = pv.Plotter(notebook=True)
+    plotter.add_mesh(grid, show_edges=True)
+    warped = grid.warp_by_scalar()
+    plotter.add_mesh(warped)
+
+    plotter.show()
