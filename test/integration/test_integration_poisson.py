@@ -22,7 +22,7 @@ def atol():
 @pytest.fixture
 def eps(mesh_sizes):
     discretization = 1 / min(mesh_sizes)
-    return 0.1 * discretization
+    return 0.00001 * discretization
 
 
 @pytest.fixture

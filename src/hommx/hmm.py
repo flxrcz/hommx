@@ -294,18 +294,20 @@ class BaseHMM(ABC):
         """
         local_dofs = self._V_macro.dofmap.cell_dofs(cell_index)
         local_dofs_unrolled = _unroll_dofs(local_dofs, self._bs)
-        points = self._V_macro.tabulate_dof_coordinates()[local_dofs]
-        c_t = np.mean(points, axis=0)
+        # Ensure connectivity between cells and vertices is available
+        self._msh.topology.create_connectivity(self._tdim, 0)
+        cell_vertices = self._msh.geometry.x[
+            self._msh.topology.connectivity(self._tdim, 0).links(cell_index)
+        ]
+        c_t = np.mean(cell_vertices, axis=0)
         # update the x value in the precompiled forms containing A
         self._x_macro.value = c_t
 
         for i, local_dof in enumerate(local_dofs_unrolled):
             self._v_macro.x.array[:] = 0.0
             self._v_macro.x.array[local_dof] = 1.0
-            self._interpolate_macro_to_micro(
-                self._v_macro, self._grad_v_macro, cell_index, self._v_micros[i]
-            )
-            self._calculate_corrector(cell_index, self._correctors[i])
+            self._interpolate_macro_to_micro(self._v_macro, self._v_micros[i], cell_index)
+            self._calculate_corrector(cell_index, i, self._correctors[i])
 
         # local stiffness matrix
         S_loc = np.zeros((self._num_basis_functions_per_cell, self._num_basis_functions_per_cell))
@@ -314,16 +316,15 @@ class BaseHMM(ABC):
                 S_loc[i, j] = fem.assemble_scalar(self._local_stiffness_forms[i][j])
 
         # scale contribution
-        cell_area = self._volume_function(points)
+        cell_area = self._volume_function(cell_vertices)
         Y_area = 1
         return S_loc * cell_area / Y_area
 
     def _interpolate_macro_to_micro(
         self,
         v_macro: fem.Function,
-        grad_v_macro_expr: fem.Expression,
+        v_micro: fem.Function,
         cell_index: int,
-        v_micro: fem.Function | None = None,
     ) -> fem.Function:
         """Interpolates a function from the macro mesh onto the micro mesh.
 
@@ -341,8 +342,6 @@ class BaseHMM(ABC):
             v_micro: Micro function, if none is provided one is created
 
         """
-        if v_micro is None:
-            v_micro = fem.Function(self._V_micro)
         cells = np.full(self._points_micro.shape[0], cell_index, dtype=np.int32)
         c_t = self._x_macro.value
         micro_center = np.mean(self._points_micro, axis=0)
@@ -350,14 +349,12 @@ class BaseHMM(ABC):
             (self._points_micro - micro_center) * self._eps + c_t, cells=cells
         ).flatten()
 
-        # update gradient constant in compiled form
-        grad_eval = grad_v_macro_expr.eval(self._msh, [cell_index])
-        self._grad_v_micro.value = grad_eval.reshape(self._grad_v_micro.value.shape)
         return v_micro
 
     def _calculate_corrector(
         self,
         cell_index: int,
+        cell_problem_index: int,
         corrector: fem.Function | None = None,
     ):
         """Calculates the corrector by solving the cell problem.
@@ -369,6 +366,8 @@ class BaseHMM(ABC):
         Args:
             cell_index: the process-local index of the cell
                 on which the cell problem should be solved
+            cell_problem_index: local index of the basis function for which the corrector should be calculated.
+                By default this is used to determine which RHS to use, so that the right basis function is used on the rhs.
             corrector: function on the micro mesh that stores the corrector,
                 if none is provided one is created
         """
@@ -377,7 +376,7 @@ class BaseHMM(ABC):
 
         problem = cell_problem.PeriodicLinearProblem(
             self._a_micro_compiled,
-            self._L_micro_compiled,
+            self._L_micro_compiled[cell_problem_index],
             self._mpc,
             petsc_options=self._petsc_options_cell_problem,
         )
@@ -595,17 +594,14 @@ class PoissonHMM(BaseHMM):
 
     def _setup_cell_problem_forms(self) -> tuple[fem.Form, fem.Form, list[fem.Form]]:
         a_micro_compiled = fem.form(
-            1
-            / self._eps**2
-            * ufl.inner(self._A_micro * ufl.grad(self._v_tilde), ufl.grad(self._z))
-            * ufl.dx
+            ufl.inner(self._A_micro * ufl.grad(self._v_tilde), ufl.grad(self._z)) * ufl.dx
         )
-        L_micro_compiled = fem.form(
-            1
-            / self._eps
-            * -ufl.inner(self._A_micro * self._grad_v_micro, ufl.grad(self._z))
-            * ufl.dx
-        )
+        L_micros_compiled = [
+            fem.form(
+                -ufl.inner(self._A_micro * ufl.grad(self._v_micros[i]), ufl.grad(self._z)) * ufl.dx
+            )
+            for i in range(len(self._v_micros))
+        ]
 
         local_stiffness_forms = [
             [
@@ -624,7 +620,7 @@ class PoissonHMM(BaseHMM):
             for j in range(self._num_basis_functions_per_cell)
         ]
 
-        return a_micro_compiled, L_micro_compiled, local_stiffness_forms
+        return a_micro_compiled, L_micros_compiled, local_stiffness_forms
 
 
 class PoissonStratifiedHMM(PoissonHMM):
@@ -701,21 +697,21 @@ class PoissonStratifiedHMM(PoissonHMM):
     def _setup_cell_problem_forms(self) -> tuple[fem.Form, fem.Form, list[fem.Form]]:
         self._Dthetax = self._Dtheta(self._x_macro)
         a_micro_compiled = fem.form(
-            1
-            / self._eps**2
-            * ufl.inner(
+            ufl.inner(
                 self._A_micro * self._Dthetax * ufl.grad(self._v_tilde),
                 self._Dthetax * ufl.grad(self._z),
             )
             * ufl.dx
         )
-        L_micro_compiled = fem.form(
-            1
-            / self._eps
-            * -ufl.inner(self._A_micro * self._grad_v_micro, self._Dthetax * ufl.grad(self._z))
-            * ufl.dx
-        )
-
+        L_micros_compiled = [
+            fem.form(
+                -ufl.inner(
+                    self._A_micro * ufl.grad(self._v_micros[i]), self._Dthetax * ufl.grad(self._z)
+                )
+                * ufl.dx
+            )
+            for i in range(len(self._v_micros))
+        ]
         local_stiffness_forms = [
             [
                 fem.form(
@@ -739,7 +735,7 @@ class PoissonStratifiedHMM(PoissonHMM):
             for j in range(self._num_basis_functions_per_cell)
         ]
 
-        return a_micro_compiled, L_micro_compiled, local_stiffness_forms
+        return a_micro_compiled, L_micros_compiled, local_stiffness_forms
 
 
 class LinearElasticityHMM(BaseHMM):
@@ -844,17 +840,15 @@ class LinearElasticityHMM(BaseHMM):
         i, j, k, l = ufl.indices(4)
 
         a_micro_compiled = fem.form(
-            1
-            / self._eps**2
-            * ((self._A_micro)[i, j, k, l] * e(self._v_tilde)[k, l] * e(self._z)[i, j])
-            * ufl.dx
+            ((self._A_micro)[i, j, k, l] * e(self._v_tilde)[k, l] * e(self._z)[i, j]) * ufl.dx
         )
-        L_micro_compiled = fem.form(
-            1
-            / self._eps
-            * -((self._A_micro)[i, j, k, l] * self._grad_v_micro[k, l] * e(self._z)[i, j])
-            * ufl.dx
-        )
+        L_micros_compiled = [
+            fem.form(
+                -((self._A_micro)[i, j, k, l] * e(self._v_micros[i_loop])[k, l] * e(self._z)[i, j])
+                * ufl.dx
+            )
+            for i_loop in range(len(self._v_micros))
+        ]
         local_stiffness_forms = [
             [
                 fem.form(
@@ -872,4 +866,4 @@ class LinearElasticityHMM(BaseHMM):
             for j_loop in range(self._num_basis_functions_per_cell)
         ]
 
-        return a_micro_compiled, L_micro_compiled, local_stiffness_forms
+        return a_micro_compiled, L_micros_compiled, local_stiffness_forms
