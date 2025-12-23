@@ -16,9 +16,6 @@ from tqdm import tqdm
 import hommx.cell_problem as cell_problem
 import hommx.helpers as helpers
 
-REFERENCE_EVALUATION_POINT_3D = np.array([[1 / 3, 1 / 3, 1 / 3]])
-REFERENCE_EVALUATION_POINT_2D = np.array([[1 / 3, 1 / 3]])
-
 
 def _triangle_area(points):
     return 0.5 * np.linalg.norm(np.cross(points[1] - points[0], points[2] - points[0]))
@@ -113,10 +110,8 @@ class BaseHMM(ABC):
 
         # Setup dimension-dependent functions
         if self._tdim == 3:
-            self._reference_evaluation_point = REFERENCE_EVALUATION_POINT_3D
             self._volume_function = _tetrahedron_volume
         else:
-            self._reference_evaluation_point = REFERENCE_EVALUATION_POINT_2D
             self._volume_function = _triangle_area
 
         # Setup function space (subclass-specific)
@@ -195,16 +190,6 @@ class BaseHMM(ABC):
 
         # placeholder function that can be used in the cell problems
         self._v_macro = fem.Function(self._V_macro)
-        self._grad_v_macro = fem.Expression(
-            ufl.grad(self._v_macro), self._reference_evaluation_point
-        )
-        # we follow the definition that grad(v)_ij = \partial v_i \partial x_j, except for scalar valued
-        # where grad should be a 1-dim array for simplicity, else A*grad(v) needs indices to make
-        # the summation explicit
-        if self._bs == 1:
-            self._grad_v_micro = fem.Constant(self._cell_mesh, np.zeros((self._tdim,)))
-        else:
-            self._grad_v_micro = fem.Constant(self._cell_mesh, np.zeros((self._bs, self._tdim)))
 
         # coefficient
         self._A_micro = self._coeff(self._x_macro, self._y)
@@ -331,13 +316,8 @@ class BaseHMM(ABC):
         Since we know that the micro domain is contained inside one macro cell,
         we can avoid dolfinx interpolate_nonmatching and instead rely on evaluating directly.
 
-        Notes:
-            This function has the side effect of updating the constant self._grad_v_micro
-            that is used in the precompiled form for the cell problem.
-
         Args:
             v_macro: Macro function
-            grad_v_macro_expr: Expression for the gradient of the macroscopic function
             cell_index: cell index on which the cell problem is solved
             v_micro: Micro function, if none is provided one is created
 
