@@ -11,12 +11,12 @@ from hommx.petsc_helper import petsc_matrix_to_numpy
 
 @pytest.fixture
 def atol_2d():
-    return 0.05
+    return 0.04
 
 
 @pytest.fixture
 def eps_2d():
-    return 1 / 2**3
+    return 1 / 2**6
 
 
 @pytest.fixture
@@ -167,7 +167,7 @@ def test_linear_elasticity_2d(
     relative_error = calc_l2_error(u_lehmm, u_ref_interpolated) / calc_l2_norm(u_ref_interpolated)
 
     assert relative_error < atol_2d, (
-        f"Relative error in 3D HMM too high. This is a heuristic, to check for code regressions. {relative_error=}"
+        f"Relative error in 2D HMM too high. This is a heuristic, to check for code regressions. {relative_error=}"
     )
 
 
