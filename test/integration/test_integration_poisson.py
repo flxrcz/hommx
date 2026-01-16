@@ -8,6 +8,34 @@ from petsc4py import PETSc
 
 from hommx.hmm import PoissonHMM
 
+COMM = MPI.COMM_SELF
+
+
+def interpolate_nonmatching(
+    V_to: fem.FunctionSpace, V_from: fem.FunctionSpace, func: fem.Function
+) -> fem.Function:
+    tdim = V_to.mesh.topology.dim
+    cells_V_to = np.arange(V_to.mesh.topology.index_map(tdim).size_local, dtype=np.int32)
+    interpolation_data = fem.create_interpolation_data(V_to, V_from, cells_V_to)
+    func_V_to = fem.Function(V_to)
+    func_V_to.interpolate_nonmatching(func, cells_V_to, interpolation_data)
+    func_V_to.x.scatter_forward()
+    return func_V_to
+
+
+def calc_l2_error(u1, u2):
+    return np.sqrt(
+        COMM.allreduce(
+            fem.assemble_scalar(fem.form(ufl.inner(u1 - u2, u1 - u2) * ufl.dx)), op=MPI.SUM
+        )
+    )
+
+
+def calc_l2_norm(u1):
+    return np.sqrt(
+        COMM.allreduce(fem.assemble_scalar(fem.form(ufl.inner(u1, u1) * ufl.dx)), op=MPI.SUM)
+    )
+
 
 @pytest.fixture
 def mesh_sizes():
@@ -169,8 +197,6 @@ def test_3d(micro_mesh_3d, macro_mesh_3d, reference_mesh_3d, eps_3d, atol_3d):
     def f(x):
         return 1
 
-    COMM = MPI.COMM_WORLD
-
     phmm = PoissonHMM(
         macro_mesh_3d, A, f, micro_mesh_3d, eps_3d, petsc_options_cell_problem={"ksp_atol": 1e-9}
     )
@@ -210,29 +236,6 @@ def test_3d(micro_mesh_3d, macro_mesh_3d, reference_mesh_3d, eps_3d, atol_3d):
 
     u_phmm = phmm.solve()
 
-    def interpolate_nonmatching(
-        V_to: fem.FunctionSpace, V_from: fem.FunctionSpace, func: fem.Function
-    ) -> fem.Function:
-        tdim = V_to.mesh.topology.dim
-        cells_V_to = np.arange(V_to.mesh.topology.index_map(tdim).size_local, dtype=np.int32)
-        interpolation_data = fem.create_interpolation_data(V_to, V_from, cells_V_to)
-        func_V_to = fem.Function(V_to)
-        func_V_to.interpolate_nonmatching(func, cells_V_to, interpolation_data)
-        func_V_to.x.scatter_forward()
-        return func_V_to
-
-    def calc_l2_error(u1, u2):
-        return np.sqrt(
-            COMM.allreduce(
-                fem.assemble_scalar(fem.form(ufl.inner(u1 - u2, u1 - u2) * ufl.dx)), op=MPI.SUM
-            )
-        )
-
-    def calc_l2_norm(u1):
-        return np.sqrt(
-            COMM.allreduce(fem.assemble_scalar(fem.form(ufl.inner(u1, u1) * ufl.dx)), op=MPI.SUM)
-        )
-
     u_ref_interpolated = interpolate_nonmatching(u_phmm._V, V_ref, u_ref)
     relative_error = calc_l2_error(u_phmm, u_ref_interpolated) / calc_l2_norm(u_ref_interpolated)
 
@@ -252,8 +255,6 @@ def test_custom_boundary_condition(micro_mesh, macro_mesh, eps_bc, atol_bc, refe
 
     def boundary_condition(x):
         return 1 + x[0] ** 2 + x[1] ** 2
-
-    COMM = MPI.COMM_WORLD
 
     phmm = PoissonHMM(
         macro_mesh, A, f, micro_mesh, eps_bc, petsc_options_cell_problem={"ksp_atol": 1e-9}
@@ -310,29 +311,6 @@ def test_custom_boundary_condition(micro_mesh, macro_mesh, eps_bc, atol_bc, refe
     bc = fem.dirichletbc(value=phmm_bc, dofs=dofs)
     phmm.set_boundary_conditions(bc)
     u_phmm = phmm.solve()
-
-    def interpolate_nonmatching(
-        V_to: fem.FunctionSpace, V_from: fem.FunctionSpace, func: fem.Function
-    ) -> fem.Function:
-        tdim = V_to.mesh.topology.dim
-        cells_V_to = np.arange(V_to.mesh.topology.index_map(tdim).size_local, dtype=np.int32)
-        interpolation_data = fem.create_interpolation_data(V_to, V_from, cells_V_to)
-        func_V_to = fem.Function(V_to)
-        func_V_to.interpolate_nonmatching(func, cells_V_to, interpolation_data)
-        func_V_to.x.scatter_forward()
-        return func_V_to
-
-    def calc_l2_error(u1, u2):
-        return np.sqrt(
-            COMM.allreduce(
-                fem.assemble_scalar(fem.form(ufl.inner(u1 - u2, u1 - u2) * ufl.dx)), op=MPI.SUM
-            )
-        )
-
-    def calc_l2_norm(u1):
-        return np.sqrt(
-            COMM.allreduce(fem.assemble_scalar(fem.form(ufl.inner(u1, u1) * ufl.dx)), op=MPI.SUM)
-        )
 
     u_ref_interpolated = interpolate_nonmatching(u_phmm._V, V_ref, u_ref)
     relative_error = calc_l2_error(u_phmm, u_ref_interpolated) / calc_l2_norm(u_ref_interpolated)
@@ -356,8 +334,6 @@ def test_custom_boundary_condition_no_homogenization(
     def boundary_condition(x):
         return 1 + x[0] ** 2 + x[1] ** 2
 
-    COMM = MPI.COMM_WORLD
-
     phmm = PoissonHMM(
         macro_mesh, A, f, micro_mesh, eps_bc, petsc_options_cell_problem={"ksp_atol": 1e-9}
     )
@@ -413,29 +389,6 @@ def test_custom_boundary_condition_no_homogenization(
     bc = fem.dirichletbc(value=phmm_bc, dofs=dofs)
     phmm.set_boundary_conditions(bc)
     u_phmm = phmm.solve()
-
-    def interpolate_nonmatching(
-        V_to: fem.FunctionSpace, V_from: fem.FunctionSpace, func: fem.Function
-    ) -> fem.Function:
-        tdim = V_to.mesh.topology.dim
-        cells_V_to = np.arange(V_to.mesh.topology.index_map(tdim).size_local, dtype=np.int32)
-        interpolation_data = fem.create_interpolation_data(V_to, V_from, cells_V_to)
-        func_V_to = fem.Function(V_to)
-        func_V_to.interpolate_nonmatching(func, cells_V_to, interpolation_data)
-        func_V_to.x.scatter_forward()
-        return func_V_to
-
-    def calc_l2_error(u1, u2):
-        return np.sqrt(
-            COMM.allreduce(
-                fem.assemble_scalar(fem.form(ufl.inner(u1 - u2, u1 - u2) * ufl.dx)), op=MPI.SUM
-            )
-        )
-
-    def calc_l2_norm(u1):
-        return np.sqrt(
-            COMM.allreduce(fem.assemble_scalar(fem.form(ufl.inner(u1, u1) * ufl.dx)), op=MPI.SUM)
-        )
 
     u_ref_interpolated = interpolate_nonmatching(u_phmm._V, V_ref, u_ref)
     relative_error = calc_l2_error(u_phmm, u_ref_interpolated) / calc_l2_norm(u_ref_interpolated)

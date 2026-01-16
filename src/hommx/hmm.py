@@ -151,7 +151,7 @@ class BaseHMM(ABC):
 
         # Setup solver
         if petsc_options_cell_problem is None:
-            petsc_options_cell_problem = {"ksp_atol": 1e-12}
+            petsc_options_cell_problem = {"ksp_atol": 1e-10}  # better default
         self._petsc_options_cell_problem = petsc_options_cell_problem
 
         self._solver = PETSc.KSP().create(self._comm)
@@ -167,10 +167,6 @@ class BaseHMM(ABC):
 
         opts.prefixPop()
         self._bcs = []
-
-        # setup cell problem options
-        if petsc_options_cell_problem is None:
-            petsc_options_cell_problem = {"ksp_atol": 1e-10}  # more sensible default
 
     @abstractmethod
     def _setup_macro_function_space(self) -> fem.FunctionSpace:
@@ -419,15 +415,11 @@ class BaseHMM(ABC):
             global_bc_dofs = _local_to_global_unrolled(owned_local_bc_dofs, self._V_macro).astype(
                 PETSc.IntType
             )
-            if hasattr(bc.g, "x"):
-                print("function-valued bc")
-                # Function-valued BC: take the owned dof values directly
+            if hasattr(bc.g, "x"):  # function valued bc
                 bc_value = bc.g.x.array[owned_local_bc_dofs]
-            elif bc.g.value.ndim == 0:
-                print("scalar values bc")
+            elif bc.g.value.ndim == 0:  # scalar valued bc
                 bc_value = np.full(owned_local_bc_dofs.shape, bc.g.value)
-            else:
-                print("vector valued bc")
+            else:  # vector valued bc
                 bc_value = np.tile(
                     bc.g.value,
                     owned_local_bc_dofs.shape[0] // bc.g.value.shape[0],
