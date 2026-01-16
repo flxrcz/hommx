@@ -10,6 +10,7 @@ import ufl
 from dolfinx import fem, la, mesh, plot
 from dolfinx.fem.assemble import _assemble_vector_array
 from dolfinx.fem.petsc import create_vector
+from mpi4py import MPI
 from petsc4py import PETSc
 from tqdm import tqdm
 
@@ -64,7 +65,7 @@ class BaseHMM(ABC):
         self,
         msh: mesh.Mesh,
         A: Callable[[fem.Constant, ufl.SpatialCoordinate], ufl.Form],
-        f: Callable,
+        f: Callable[[ufl.SpatialCoordinate], ufl.Form],
         msh_micro: mesh.Mesh,
         eps: float,
         petsc_options_global_solve: dict | None = None,
@@ -87,12 +88,18 @@ class BaseHMM(ABC):
             petsc_options_cell_problem: PETSc solver options for the cell problem solver.
             petsc_options_prefix: Options prefix used for PETSc options.
         """
+        self._logger = logging.getLogger(__name__)
         self._msh = msh
         self._comm = msh.comm
         self._coeff = A
         self._f = f
         self._eps = eps
         self._cell_mesh = msh_micro
+        if self._cell_mesh.comm.Compare(MPI.COMM_SELF) != 1:
+            self._logger.error(
+                "Cell mesh shold be on MPI.COMM_SELF, other communicators may not work."
+            )
+        self._cell_mesh_area = fem.assemble_scalar(fem.form(1 * ufl.dx(domain=self._cell_mesh)))
         self._tdim = self._msh.topology.dim
 
         if self._tdim not in (2, 3):
@@ -140,10 +147,9 @@ class BaseHMM(ABC):
                 (self._num_local_dofs, self._num_global_dofs),
             )
         )
+        self._needs_reassembly = True
 
-        # Setup logging and solver
-        self._logger = logging.getLogger(__name__)
-
+        # Setup solver
         if petsc_options_cell_problem is None:
             petsc_options_cell_problem = {"ksp_atol": 1e-12}
         self._petsc_options_cell_problem = petsc_options_cell_problem
@@ -161,6 +167,10 @@ class BaseHMM(ABC):
 
         opts.prefixPop()
         self._bcs = []
+
+        # setup cell problem options
+        if petsc_options_cell_problem is None:
+            petsc_options_cell_problem = {"ksp_atol": 1e-10}  # more sensible default
 
     @abstractmethod
     def _setup_macro_function_space(self) -> fem.FunctionSpace:
@@ -234,11 +244,25 @@ class BaseHMM(ABC):
             self._bcs = bcs
         else:
             self._bcs = [bcs]
+        # Mark for reassembly; we keep the preallocation and just zero on next assembly
+        self._needs_reassembly = True
+
+    def set_right_hand_side(self, f: Callable[[ufl.SpatialCoordinate], ufl.Form]):
+        """Sets the right hand side
+
+        Args:
+            f: The right hand side of the problem.
+        """
+        L = ufl.inner(f(self._x), self._v_test) * ufl.dx
+        self._L = fem.form(L)
 
     def _assemble_stiffness(self):
         """Assembly of the stiffness matrix in parallel."""
-        if self._A.assembled:
+        if not self._needs_reassembly:
             return
+
+        # Reuse preallocation; just clear existing values
+        self._A.zeroEntries()
 
         self._setup_cell_problems()
         num_local_cells = self._V_macro.mesh.topology.index_map(self._tdim).size_local
@@ -265,6 +289,8 @@ class BaseHMM(ABC):
                 S_loc.flatten(),
                 addv=PETSc.InsertMode.ADD_VALUES,
             )
+
+        self._needs_reassembly = False
 
     def _compute_local_stiffness(self, cell_index: int) -> np.ndarray:
         """Computes the local stiffness matrix on one element by solving the cell problem for all
@@ -302,7 +328,7 @@ class BaseHMM(ABC):
 
         # scale contribution
         cell_area = self._volume_function(cell_vertices)
-        Y_area = 1
+        Y_area = self._cell_mesh_area
         return S_loc * cell_area / Y_area
 
     def _interpolate_macro_to_micro(
@@ -389,17 +415,27 @@ class BaseHMM(ABC):
         # enforce Dirichlet BC by lifting
         for bc in self._bcs:
             local_bc_dofs, ghost_index = bc.dof_indices()
-            global_bc_dofs = _local_to_global_unrolled(
-                local_bc_dofs[:ghost_index], self._V_macro
-            ).astype(PETSc.IntType)
-            if bc.g.value.ndim == 0:
-                bc_value = np.full(global_bc_dofs.shape, bc.g.value)
+            owned_local_bc_dofs = local_bc_dofs[:ghost_index]
+            global_bc_dofs = _local_to_global_unrolled(owned_local_bc_dofs, self._V_macro).astype(
+                PETSc.IntType
+            )
+            if hasattr(bc.g, "x"):
+                print("function-valued bc")
+                # Function-valued BC: take the owned dof values directly
+                bc_value = bc.g.x.array[owned_local_bc_dofs]
+            elif bc.g.value.ndim == 0:
+                print("scalar values bc")
+                bc_value = np.full(owned_local_bc_dofs.shape, bc.g.value)
             else:
-                bc_value = np.tile(bc.g.value, local_bc_dofs.shape[0] // bc.g.value.shape[0])
+                print("vector valued bc")
+                bc_value = np.tile(
+                    bc.g.value,
+                    owned_local_bc_dofs.shape[0] // bc.g.value.shape[0],
+                )
 
             u_bc = self._u.copy()
             u_bc.x.array[:] = 0.0
-            u_bc.x.array[local_bc_dofs] = bc_value
+            u_bc.x.array[owned_local_bc_dofs] = bc_value
             u_bc.x.scatter_forward()
             b_lift = self._A.createVecLeft()
             self._A.mult(u_bc.x.petsc_vec, b_lift)
