@@ -168,17 +168,14 @@ class BaseHMM(ABC):
         opts.prefixPop()
         self._bcs = []
 
-    @abstractmethod
-    def _setup_macro_function_space(self) -> fem.FunctionSpace:
-        """Setup macro-scale function space. Must be implemented by subclasses."""
-        pass
+        self._setup_cell_problem_variables()
 
-    @abstractmethod
-    def _setup_micro_function_space(self) -> fem.FunctionSpace:
-        """Setup micro-scale function space. Must be implemented by subclasses."""
-        pass
+    @property
+    def function_space(self) -> fem.FunctionSpace:
+        """Function space of the macro mesh."""
+        return self._V_macro
 
-    def _setup_cell_problems(self) -> None:
+    def _setup_cell_problem_variables(self) -> None:
         """Setup cell problem specifics"""
         # micro function space and periodic boundary conditions
         self._V_micro = self._setup_micro_function_space()
@@ -209,26 +206,72 @@ class BaseHMM(ABC):
             fem.Function(self._V_micro) for _ in range(self._num_basis_functions_per_cell)
         ]
 
-        self._a_micro_compiled, self._L_micro_compiled, self._local_stiffness_forms = (
-            self._setup_cell_problem_forms()
-        )
+    @abstractmethod
+    def _setup_macro_function_space(self) -> fem.FunctionSpace:
+        """Setup macro-scale function space. Must be implemented by subclasses."""
+        pass
 
     @abstractmethod
-    def _setup_cell_problem_forms(self) -> tuple[fem.Form, fem.Form, list[fem.Form]]:
-        """Setup cell problem forms. Must be implemented by subclasses.
-            Please use the variables in _setup_cell_problems inside those forms for efficiency.
-            Returns:
-        tuple: A tuple containing:
-            - a: lhs form for the cell problem
-            - L: rhs form for the cell problem
-            - S: multidimensional list, s.t. S[i][j] is the form that calculates the $S_{ij}$-entry in the local stiffness matrix
+    def _setup_micro_function_space(self) -> fem.FunctionSpace:
+        """Setup micro-scale function space. Must be implemented by subclasses."""
+        pass
+
+    @abstractmethod
+    def _build_cell_problem_lhs(self) -> fem.Form:
+        """Builds the LHS of the cell problem. Must be implemented by subclasses
+            Please use the variables in _setup_cell_problem_variables inside the forms for efficiency.
+        Returns:
+            fem.Form: lhs form for the cell problem
         """
         pass
 
-    @property
-    def function_space(self) -> fem.FunctionSpace:
-        """Function space of the macro mesh."""
-        return self._V_macro
+    @abstractmethod
+    def _build_cell_problem_rhs(self, v_micro) -> fem.Form:
+        """Builds the LHS of the cell problem. Must be implemented by subclasses
+            Please use the variables in _setup_cell_problem_variables inside the forms for efficiency.
+        Args:
+            v_micro: Macroscopic basis function interpolated onto the micro mesh
+        Returns:
+            fem.Form: rhs form for the cell problem
+        """
+        pass
+
+    @abstractmethod
+    def _build_local_stiffness_contribution(
+        self,
+        v_micro_i: fem.Function,
+        v_micro_j: fem.Function,
+        corrector_i: fem.Function,
+        corrector_j: fem.Function,
+    ):
+        """Builds the form corresponding to the local stiffness contribution $S_{ij}$ for one element. Must be implemented by subclasses
+            Please use the variables in _setup_cell_problem_variables inside the forms for efficiency.
+
+        v_micro_i: i-th basis function on the element
+        v_micro_i: j-th basis function on the element
+        corrector_i: corrector corresponding to v_micro_i
+        corrector_j: corrector corresponding to v_micro_j
+        Returns:
+            fem.Form: lhs form for the cell problem
+        """
+        pass
+
+    def _setup_cell_problem_forms(self) -> None:
+        """Setup cell problem forms, from abstract base class method."""
+        self._a_micro_compiled = self._build_cell_problem_lhs()
+        self._L_micro_compiled = [
+            self._build_cell_problem_rhs(self._v_micros[i])
+            for i in range(self._num_basis_functions_per_cell)
+        ]
+        self._local_stiffness_forms = [
+            [
+                self._build_local_stiffness_contribution(
+                    self._v_micros[i], self._v_micros[j], self._correctors[i], self._correctors[j]
+                )
+                for i in range(self._num_basis_functions_per_cell)
+            ]
+            for j in range(self._num_basis_functions_per_cell)
+        ]
 
     def set_boundary_conditions(self, bcs: list[fem.DirichletBC] | fem.DirichletBC):
         """Set boundary conditions.
@@ -260,7 +303,7 @@ class BaseHMM(ABC):
         # Reuse preallocation; just clear existing values
         self._A.zeroEntries()
 
-        self._setup_cell_problems()
+        self._setup_cell_problem_forms()
         num_local_cells = self._V_macro.mesh.topology.index_map(self._tdim).size_local
 
         # cell problem loop
@@ -600,35 +643,30 @@ class PoissonHMM(BaseHMM):
     def _setup_micro_function_space(self) -> fem.FunctionSpace:
         return fem.functionspace(self._cell_mesh, ("Lagrange", 1))
 
-    def _setup_cell_problem_forms(self) -> tuple[fem.Form, fem.Form, list[fem.Form]]:
-        a_micro_compiled = fem.form(
+    def _build_cell_problem_lhs(self) -> fem.Form:
+        return fem.form(
             ufl.inner(self._A_micro * ufl.grad(self._v_tilde), ufl.grad(self._z)) * ufl.dx
         )
-        L_micros_compiled = [
-            fem.form(
-                -ufl.inner(self._A_micro * ufl.grad(self._v_micros[i]), ufl.grad(self._z)) * ufl.dx
+
+    def _build_cell_problem_rhs(self, v_micro: fem.Function) -> fem.Form:
+        return fem.form(-ufl.inner(self._A_micro * ufl.grad(v_micro), ufl.grad(self._z)) * ufl.dx)
+
+    def _build_local_stiffness_contribution(
+        self,
+        v_micro_i: fem.Function,
+        v_micro_j: fem.Function,
+        corrector_i: fem.Function,
+        corrector_j: fem.Function,
+    ):
+        return fem.form(
+            1
+            / self._eps**2
+            * ufl.inner(
+                self._A_micro * (ufl.grad(v_micro_i) + ufl.grad(corrector_i)),
+                ufl.grad(v_micro_j) + ufl.grad(corrector_j),
             )
-            for i in range(len(self._v_micros))
-        ]
-
-        local_stiffness_forms = [
-            [
-                fem.form(
-                    1
-                    / self._eps**2
-                    * ufl.inner(
-                        self._A_micro
-                        * (ufl.grad(self._v_micros[i]) + ufl.grad(self._correctors[i])),
-                        ufl.grad(self._v_micros[j]) + ufl.grad(self._correctors[j]),
-                    )
-                    * ufl.dx
-                )
-                for i in range(self._num_basis_functions_per_cell)
-            ]
-            for j in range(self._num_basis_functions_per_cell)
-        ]
-
-        return a_micro_compiled, L_micros_compiled, local_stiffness_forms
+            * ufl.dx
+        )
 
 
 class PoissonStratifiedHMM(PoissonHMM):
@@ -701,49 +739,39 @@ class PoissonStratifiedHMM(PoissonHMM):
             petsc_options_prefix,
         )
         self._Dtheta = Dtheta
-
-    def _setup_cell_problem_forms(self) -> tuple[fem.Form, fem.Form, list[fem.Form]]:
         self._Dthetax = self._Dtheta(self._x_macro)
-        a_micro_compiled = fem.form(
+
+    def _build_cell_problem_lhs(self) -> fem.Form:
+        return fem.form(
             ufl.inner(
                 self._A_micro * self._Dthetax * ufl.grad(self._v_tilde),
                 self._Dthetax * ufl.grad(self._z),
             )
             * ufl.dx
         )
-        L_micros_compiled = [
-            fem.form(
-                -ufl.inner(
-                    self._A_micro * ufl.grad(self._v_micros[i]), self._Dthetax * ufl.grad(self._z)
-                )
-                * ufl.dx
-            )
-            for i in range(len(self._v_micros))
-        ]
-        local_stiffness_forms = [
-            [
-                fem.form(
-                    1
-                    / self._eps**2
-                    * ufl.inner(
-                        self._A_micro
-                        * (
-                            ufl.grad(self._v_micros[i])
-                            + self._Dthetax * ufl.grad(self._correctors[i])
-                        ),
-                        (
-                            ufl.grad(self._v_micros[j])
-                            + self._Dthetax * ufl.grad(self._correctors[j])
-                        ),
-                    )
-                    * ufl.dx
-                )
-                for i in range(self._num_basis_functions_per_cell)
-            ]
-            for j in range(self._num_basis_functions_per_cell)
-        ]
 
-        return a_micro_compiled, L_micros_compiled, local_stiffness_forms
+    def _build_cell_problem_rhs(self, v_micro: fem.Function) -> fem.Form:
+        return fem.form(
+            -ufl.inner(self._A_micro * ufl.grad(v_micro), self._Dthetax * ufl.grad(self._z))
+            * ufl.dx
+        )
+
+    def _build_local_stiffness_contribution(
+        self,
+        v_micro_i: fem.Function,
+        v_micro_j: fem.Function,
+        corrector_i: fem.Function,
+        corrector_j: fem.Function,
+    ):
+        return fem.form(
+            1
+            / self._eps**2
+            * ufl.inner(
+                self._A_micro * (ufl.grad(v_micro_i) + self._Dthetax * ufl.grad(corrector_i)),
+                (ufl.grad(v_micro_j) + self._Dthetax * ufl.grad(corrector_j)),
+            )
+            * ufl.dx
+        )
 
 
 class LinearElasticityHMM(BaseHMM):
@@ -841,37 +869,39 @@ class LinearElasticityHMM(BaseHMM):
     def _setup_micro_function_space(self) -> fem.FunctionSpace:
         return fem.functionspace(self._cell_mesh, ("Lagrange", 1, (self._tdim,)))
 
-    def _setup_cell_problem_forms(self) -> tuple[fem.Form, fem.Form, list[fem.Form]]:
-        def e(u):
-            return 1 / 2 * (ufl.grad(u) + ufl.transpose(ufl.grad(u)))
+    @staticmethod
+    def _e(u):
+        return 1 / 2 * (ufl.grad(u) + ufl.transpose(ufl.grad(u)))
 
+    def _build_cell_problem_lhs(self) -> fem.Form:
         i, j, k, l = ufl.indices(4)
-
-        a_micro_compiled = fem.form(
-            ((self._A_micro)[i, j, k, l] * e(self._v_tilde)[k, l] * e(self._z)[i, j]) * ufl.dx
+        return fem.form(
+            ((self._A_micro)[i, j, k, l] * self._e(self._v_tilde)[k, l] * self._e(self._z)[i, j])
+            * ufl.dx
         )
-        L_micros_compiled = [
-            fem.form(
-                -((self._A_micro)[i, j, k, l] * e(self._v_micros[i_loop])[k, l] * e(self._z)[i, j])
-                * ufl.dx
-            )
-            for i_loop in range(len(self._v_micros))
-        ]
-        local_stiffness_forms = [
-            [
-                fem.form(
-                    1
-                    / self._eps**2
-                    * (
-                        self._A_micro[i, j, k, l]
-                        * (e(self._v_micros[i_loop])[k, l] + e(self._correctors[i_loop])[k, l])
-                        * (e(self._v_micros[j_loop])[i, j] + e(self._correctors[j_loop])[i, j])
-                    )
-                    * ufl.dx
-                )
-                for i_loop in range(self._num_basis_functions_per_cell)
-            ]
-            for j_loop in range(self._num_basis_functions_per_cell)
-        ]
 
-        return a_micro_compiled, L_micros_compiled, local_stiffness_forms
+    def _build_cell_problem_rhs(self, v_micro: fem.Function) -> fem.Form:
+        i, j, k, l = ufl.indices(4)
+        return fem.form(
+            -((self._A_micro)[i, j, k, l] * self._e(v_micro)[k, l] * self._e(self._z)[i, j])
+            * ufl.dx
+        )
+
+    def _build_local_stiffness_contribution(
+        self,
+        v_micro_i: fem.Function,
+        v_micro_j: fem.Function,
+        corrector_i: fem.Function,
+        corrector_j: fem.Function,
+    ):
+        i, j, k, l = ufl.indices(4)
+        return fem.form(
+            1
+            / self._eps**2
+            * (
+                self._A_micro[i, j, k, l]
+                * (self._e(v_micro_i)[k, l] + self._e(corrector_i)[k, l])
+                * (self._e(v_micro_j)[i, j] + self._e(corrector_j)[i, j])
+            )
+            * ufl.dx
+        )
