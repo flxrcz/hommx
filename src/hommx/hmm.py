@@ -9,7 +9,7 @@ import pyvista as pv
 import ufl
 from dolfinx import fem, la, mesh, plot
 from dolfinx.fem.assemble import _assemble_vector_array
-from dolfinx.fem.petsc import create_vector
+from dolfinx.fem.petsc import LinearProblem, create_vector
 from mpi4py import MPI
 from petsc4py import PETSc
 from tqdm import tqdm
@@ -123,6 +123,7 @@ class BaseHMM(ABC):
 
         # Setup function space (subclass-specific)
         self._V_macro = self._setup_macro_function_space()
+        self._macro_coordinates = self._V_macro.tabulate_dof_coordinates()
         self._bs = self._V_macro.dofmap.index_map_bs
 
         # Setup RHS and forms
@@ -346,9 +347,7 @@ class BaseHMM(ABC):
         local_dofs_unrolled = _unroll_dofs(local_dofs, self._bs)
         # Ensure connectivity between cells and vertices is available
         self._msh.topology.create_connectivity(self._tdim, 0)
-        cell_vertices = self._msh.geometry.x[
-            self._msh.topology.connectivity(self._tdim, 0).links(cell_index)
-        ]
+        cell_vertices = self._macro_coordinates[local_dofs]
         c_t = np.mean(cell_vertices, axis=0)
         # update the x value in the precompiled forms containing A
         self._x_macro.value = c_t
@@ -904,4 +903,362 @@ class LinearElasticityHMM(BaseHMM):
                 * (self._e(v_micro_j)[i, j] + self._e(corrector_j)[i, j])
             )
             * ufl.dx
+        )
+
+
+class LinearElasticityStratifiedHMM(LinearElasticityHMM):
+    r"""Solver for the Multi-Scale Linear Elasticity problem using the HMM.
+
+    This class implements the Heterogenous-Multi-Scale Method for a Linear elasticity problem.
+    We want to solve the weak formulation of the Linear elasticity problem:
+
+    Note that in this case $A = A_{ijkl}$ is a fourth order tensor and $e(u)$ is the strain of u
+    and a matrix, i.e. $e(u)_{ij} = 1/2 (\frac{\partial u_i}{\partial x_j} + \frac{\partial u_j}{\partial x_j}).
+    We define $Am = (A_{ijkl}m_{kl})_{ij}$
+
+    $$
+        \int_\Omega (A e(u)) : e(v) dx = \int_\Omega f \cdot v dx
+    $$
+
+    Note that we do not impose any Boundary condition by default.
+    They have to be set by the user using [`set_boundary_conditions`][hommx.hmm.LinearElasticityHMM.set_boundary_conditions]
+
+    We do this by approximating the homogenized coefficient on every cell and
+    using the adapted bilinear form
+
+    $$
+    a_H(v_H, w_H) = \sum_{T\in \mathcal T_H} \frac{|T|}{|Y_\varepsilon(c_T)|} \int_{Y_\varepsilon(c_T)} (A(c_T, \frac{x}{\varepsilon}) (e(v_h) + e(\tilde{v_h})) : (e(v_h) + e(\tilde{v_h}) dx,
+    $$
+
+    where $\tilde{v_h}$ is the solution to
+
+    $$
+    \int_{Y_\varepsilon(c_T)} A(c_T, \frac{x}{\varepsilon}) e(\tilde{v_h}) : e(z_h) dx = - \int_{Y_\varepsilon(c_T)} A(c_T, \frac{x}{\varepsilon})  e(v_H) : e(z_h) dx
+    $$
+
+    note that the gradient of the macro-scale function $v_H$ appears on the RHS.
+
+    $Y_\varepsilon(c_T) = c_T + [-\varepsilon/2, \varepsilon]^d$ is the micro mesh cell.
+
+    Parallelization:
+    The code can in theory run in parallel.
+    If you run the code in serial, the setup of the meshes can be arbitrary.
+    If you want to run the code in parallel, it is only supported for now that the micro mesh lives
+    on MPI.COMM_SELF. Parallelization is done by each process solving the cell problems for it's local
+    part.
+    Passing a mesh that lives on anything but MPI.COMM_SELF to the msh_micro parameter can lead to
+    unexpected behaviour.
+
+
+    Notes:
+        - It is the users responsibility to ensure that the micro meshes fit into the macro mesh cells.
+        I.e. the shifted and scaled versions of $Y$ $Y_\varepsilon(c_T)$ need to fit within the element $T$.
+        Otherwise the interpolation of the macro scale basis functions to the micro scale may lead to
+        unexpected behaviour.
+    """
+
+    def __init__(
+        self,
+        msh: mesh.Mesh,
+        A: Callable[[fem.Constant, ufl.SpatialCoordinate], ufl.Form],
+        f: Callable,
+        msh_micro: mesh.Mesh,
+        eps: float,
+        Dtheta: Callable[[fem.Constant], ufl.Form],
+        petsc_options_global_solve: dict | None = None,
+        petsc_options_cell_problem: dict | None = None,
+        petsc_options_prefix: str = "hommx_LinearElasticityHMM",
+    ):
+        r"""Initializes the solver, meshes and boundary conditions.
+
+        Args:
+            msh: The macro mesh, on which we want to solve the oscillatory PDE.
+            A: The coefficient, should be callable like: `A(x)(y)`,
+                where x is a spatial coordinate on the macro mesh (the cell center c_T)
+                and y is a ufl.SpatialCoordinate on the microscopic mesh.
+                A needs to be 1-periodic in y.
+            f: The right hand side of the problem.
+            msh_micro: The microscopic mesh, needs to be the unit cell.
+                Should live on MPI.COMM_SELF since each process owns a whole copy.
+            eps: The microscopic scaling parameter.
+            petsc_options_global_solve: PETSc solver options for the global solver.
+            petsc_options_cell_problem: PETSc solver options for the cell problem solver.
+            petsc_options_prefix: Options prefix used for PETSc options.
+        """
+        super().__init__(
+            msh,
+            A,
+            f,
+            msh_micro,
+            eps,
+            petsc_options_global_solve,
+            petsc_options_cell_problem,
+            petsc_options_prefix,
+        )
+        self._Dtheta = Dtheta
+        self._Dthetax = self._Dtheta(self._x_macro)
+
+    def _setup_macro_function_space(self) -> fem.FunctionSpace:
+        return fem.functionspace(self._msh, ("Lagrange", 1, (self._tdim,)))
+
+    def _setup_micro_function_space(self) -> fem.FunctionSpace:
+        return fem.functionspace(self._cell_mesh, ("Lagrange", 1, (self._tdim,)))
+
+    def _e_D(self, u, Dtheta=None):
+        if Dtheta is None:
+            Dtheta = self._Dthetax
+        grad = ufl.nabla_grad(
+            u
+        )  # ufl.grad does the jacobian, nabla_grad does J^T, order matters for elasticity!
+        return 1 / 2 * (Dtheta * grad + ufl.transpose(Dtheta * grad))
+
+    def _build_cell_problem_lhs(self) -> fem.Form:
+        i, j, k, l = ufl.indices(4)
+        return fem.form(
+            (
+                (self._A_micro)[i, j, k, l]
+                * self._e_D(self._v_tilde)[k, l]
+                * self._e_D(self._z)[i, j]
+            )
+            * ufl.dx
+        )
+
+    def _build_cell_problem_rhs(self, v_micro: fem.Function) -> fem.Form:
+        i, j, k, l = ufl.indices(4)
+        return fem.form(
+            -((self._A_micro)[i, j, k, l] * self._e(v_micro)[k, l] * self._e_D(self._z)[i, j])
+            * ufl.dx
+        )
+
+    def _build_local_stiffness_contribution(
+        self,
+        v_micro_i: fem.Function,
+        v_micro_j: fem.Function,
+        corrector_i: fem.Function,
+        corrector_j: fem.Function,
+    ):
+        i, j, k, l = ufl.indices(4)
+        return fem.form(
+            1
+            / self._eps**2
+            * (
+                self._A_micro[i, j, k, l]
+                * (self._e(v_micro_i)[k, l] + self._e_D(corrector_i)[k, l])
+                * (self._e(v_micro_j)[i, j] + self._e_D(corrector_j)[i, j])
+            )
+            * ufl.dx
+        )
+
+
+class BasePeriodicHMM(ABC):
+    """Abstract base class for periodic homogenization.
+
+    Handles MPC setup, solves one cell problem per direction, and lets subclasses provide
+    the micro function space, bilinear form, RHS, and flux expression used to build A_hom.
+    """
+
+    def __init__(
+        self,
+        msh: mesh.Mesh,
+        A: Callable[[fem.Constant, ufl.SpatialCoordinate], ufl.Form],
+        f: Callable[[ufl.SpatialCoordinate], ufl.Form],
+        msh_micro: mesh.Mesh,
+        eps: float,
+        petsc_options_global_solve: dict | None = None,
+        petsc_options_cell_problem: dict | None = None,
+        petsc_options_prefix: str = "hommx_periodicHMM",
+    ):
+        self._logger = logging.getLogger(__name__)
+        self._msh = msh
+        self._comm = msh.comm
+        self._coeff = A
+        self._f = f
+        self._eps = eps
+        self._cell_mesh = msh_micro
+        self._tdim = msh_micro.topology.dim
+        if self._tdim not in (2, 3):
+            raise ValueError("Only 2D and 3D periodic homogenization supported.")
+        self._cell_volume = fem.assemble_scalar(fem.form(1 * ufl.dx(domain=self._cell_mesh)))
+        if self._cell_volume == 0.0:
+            raise ValueError("Micro cell volume is zero; check the input mesh.")
+
+        if petsc_options_cell_problem is None:
+            petsc_options_cell_problem = {"ksp_atol": 1e-12}
+        self._petsc_options_cell_problem = petsc_options_cell_problem
+        self._petsc_options_global_solve = petsc_options_global_solve
+
+        self._V_macro = self._setup_macro_function_space()
+        self._v_test = ufl.TestFunction(self._V_macro)
+        self._v_trial = ufl.TrialFunction(self._V_macro)
+        self._x = ufl.SpatialCoordinate(self._msh)
+        L = ufl.inner(f(self._x), self._v_test) * ufl.dx
+        self._L = fem.form(L)
+        self._u = fem.Function(self._V_macro)
+
+        self._V_micro = self._setup_micro_function_space()
+        self._mpc = helpers.create_periodic_boundary_conditions(self._V_micro, [])
+        self._v = ufl.TrialFunction(self._V_micro)
+        self._z = ufl.TestFunction(self._V_micro)
+        self._y = ufl.SpatialCoordinate(self._cell_mesh)
+        self._A_micro = A(self._y)
+
+        self._direction_basis_vecs = [
+            ufl.as_vector([1.0 if i == j else 0.0 for i in range(self._tdim)])
+            for j in range(self._tdim)
+        ]
+        self._projection_basis_vecs = self._direction_basis_vecs
+
+        # Predefine correctors (one per direction) and local stiffness form array
+        self._correctors: list[fem.Function] = [
+            fem.Function(self._V_micro) for _ in self._direction_basis_vecs
+        ]
+        self._local_stiffness_forms: list[list[fem.Form]] | None = None
+        self._a_form: fem.Form | None = None
+        self._A_hom: np.ndarray | None = None
+
+    @property
+    def function_space(self) -> fem.FunctionSpace:
+        """Function space of the macro mesh."""
+        return self._V_macro
+
+    @abstractmethod
+    def _setup_macro_function_space(self) -> fem.FunctionSpace:
+        """Setup macro-scale function space. Must be implemented by subclasses."""
+        pass
+
+    @abstractmethod
+    def _setup_micro_function_space(self) -> fem.FunctionSpace:
+        pass
+
+    @abstractmethod
+    def _build_lhs_form(self) -> fem.Form:
+        pass
+
+    @abstractmethod
+    def _build_rhs_form(self, direction, direction_index: int) -> fem.Form:
+        pass
+
+    @abstractmethod
+    def _build_local_stiffness_form(
+        self, projection, direction, corrector: fem.Function
+    ) -> fem.Form:
+        pass
+
+    def set_boundary_conditions(self, bcs: list[fem.DirichletBC] | fem.DirichletBC):
+        """Set boundary conditions.
+
+        Args:
+            bcs: Single BC or list of BCs
+        """
+        if isinstance(bcs, list):
+            self._bcs = bcs
+        else:
+            self._bcs = [bcs]
+
+    def set_right_hand_side(self, f: Callable[[ufl.SpatialCoordinate], ufl.Form]):
+        """Sets the right hand side
+
+        Args:
+            f: The right hand side of the problem.
+        """
+        L = ufl.inner(f(self._x), self._v_test) * ufl.dx
+        self._L = fem.form(L)
+
+    def _build_local_stiffness_forms(self) -> list[list[fem.Form]]:
+        """Matrix of local stiffness forms (projection x direction), built once.
+
+        Mirrors BaseHMM: subclasses supply a single-form builder; base constructs the array.
+        """
+        return [
+            [
+                self._build_local_stiffness_form(proj, direction, self._correctors[q])
+                for q, direction in enumerate(self._direction_basis())
+            ]
+            for proj in self._projection_basis()
+        ]
+
+    def _direction_basis(self):
+        return self._direction_basis_vecs
+
+    def _projection_basis(self):
+        return self._projection_basis_vecs
+
+    def _init_hom_tensor(self, num_directions: int) -> np.ndarray:
+        return np.zeros((len(self._projection_basis()), num_directions), dtype=float)
+
+    def _accumulate_hom_tensor(self, A_hom: np.ndarray, direction_index: int):
+        for p, _ in enumerate(self._projection_basis()):
+            A_hom[p, direction_index] = fem.assemble_scalar(
+                self._local_stiffness_forms[p][direction_index]
+            )
+
+    def _scale_hom_tensor(self, A_hom: np.ndarray):
+        A_hom /= self._cell_volume
+
+    @property
+    def correctors(self) -> list[fem.Function]:
+        return self._correctors
+
+    @property
+    def A_hom(self) -> np.ndarray | None:
+        return self._A_hom
+
+    def compute_effective_tensor(self) -> np.ndarray:
+        """Solve one periodic cell problem per direction and return A_hom."""
+
+        if self._a_form is None:
+            self._a_form = self._build_lhs_form()
+
+        if self._local_stiffness_forms is None:
+            self._local_stiffness_forms = self._build_local_stiffness_forms()
+
+        directions = self._direction_basis()
+        A_hom = self._init_hom_tensor(len(directions))
+
+        for q, direction in enumerate(directions):
+            L_form = self._build_rhs_form(direction, q)
+            problem = cell_problem.PeriodicLinearProblem(
+                self._a_form,
+                L_form,
+                self._mpc,
+                petsc_options=self._petsc_options_cell_problem,
+            )
+            w_q = problem.solve()
+            self._correctors[q].x.array[:] = w_q.x.array
+            self._accumulate_hom_tensor(A_hom, q)
+
+        self._scale_hom_tensor(A_hom)
+        self._A_hom = A_hom
+        return A_hom
+
+    def solve(self) -> fem.Function:
+        effective_A = ufl.as_matrix(self.compute_effective_tensor())
+        a = ufl.inner(effective_A * ufl.grad(self._v_trial), ufl.grad(self._v_test)) * ufl.dx
+        lp = LinearProblem(
+            a, self._L, self._bcs, u=self._u, petsc_options=self._petsc_options_global_solve
+        )
+        self._u = lp.solve()
+        return self._u
+
+
+class PoissonPeriodicHMM(BasePeriodicHMM):
+    """Periodic homogenization for scalar diffusion (A = A(y))."""
+
+    def _setup_micro_function_space(self) -> fem.FunctionSpace:
+        return fem.functionspace(self._cell_mesh, ("Lagrange", 1))
+
+    def _setup_macro_function_space(self) -> fem.FunctionSpace:
+        return fem.functionspace(self._cell_mesh, ("Lagrange", 1))
+
+    def _build_lhs_form(self) -> fem.Form:
+        return fem.form(ufl.inner(self._A_micro * ufl.grad(self._v), ufl.grad(self._z)) * ufl.dx)
+
+    def _build_rhs_form(self, direction, direction_index: int) -> fem.Form:
+        return fem.form(-ufl.inner(self._A_micro * direction, ufl.grad(self._z)) * ufl.dx)
+
+    def _build_local_stiffness_form(
+        self, projection, direction, corrector: fem.Function
+    ) -> fem.Form:
+        return fem.form(
+            ufl.inner(self._A_micro * (direction + ufl.grad(corrector)), projection) * ufl.dx
         )
