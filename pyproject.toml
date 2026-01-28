@@ -2,7 +2,7 @@
 authors = [{name = "Felix Racz", email = "felix.racz@student.kit.edu"}]
 description = "Dolfinx package for the Heterogeneous Multiscale Method (HMM)."
 name = "hommx"
-version = "0.0.2"
+version = "0.0.3"
 requires-python = ">=3.13, <3.14"
 dependencies = ["pyvista[jupyter]==0.46.3", "trame-server==3.6.3"]
 

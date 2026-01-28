@@ -6,7 +6,8 @@ from dolfinx.fem.petsc import LinearProblem
 from mpi4py import MPI
 from petsc4py import PETSc
 
-from hommx.hmm import PoissonHMM
+from hommx.hmm import PoissonHMM, PoissonPeriodicHMM, PoissonStratifiedHMM
+from hommx.petsc_helper import petsc_matrix_to_numpy
 
 COMM = MPI.COMM_SELF
 
@@ -35,6 +36,25 @@ def calc_l2_norm(u1):
     return np.sqrt(
         COMM.allreduce(fem.assemble_scalar(fem.form(ufl.inner(u1, u1) * ufl.dx)), op=MPI.SUM)
     )
+
+
+def zero_dirichlet_bcs(V: fem.FunctionSpace) -> list[fem.DirichletBC]:
+    msh = V.mesh
+    tdim = msh.topology.dim
+    left = np.min(msh.geometry.x[:, 0])
+    right = np.max(msh.geometry.x[:, 0])
+    bottom = np.min(msh.geometry.x[:, 1])
+    top = np.max(msh.geometry.x[:, 1])
+    facets = mesh.locate_entities_boundary(
+        msh,
+        dim=(tdim - 1),
+        marker=lambda x: np.isclose(x[0], left)
+        | np.isclose(x[0], right)
+        | np.isclose(x[1], bottom)
+        | np.isclose(x[1], top),
+    )
+    dofs = fem.locate_dofs_topological(V, entity_dim=(tdim - 1), entities=facets)
+    return [fem.dirichletbc(PETSc.ScalarType(0), dofs, V)]
 
 
 @pytest.fixture
@@ -96,31 +116,6 @@ def micro_mesh_3d(mesh_sizes_3d):
 @pytest.fixture
 def reference_mesh_3d(mesh_reference_sizes_3d):
     return mesh.create_unit_cube(MPI.COMM_SELF, *mesh_reference_sizes_3d)
-
-
-@pytest.fixture
-def eps_bc():
-    return 2 ** (-8)
-
-
-@pytest.fixture
-def atol_bc():
-    return 6e-3
-
-
-@pytest.fixture
-def atol_bc_no_homogenization():
-    return 5e-4
-
-
-@pytest.fixture
-def mesh_reference_sizes_bc():
-    return (2**10, 2**10)
-
-
-@pytest.fixture
-def reference_mesh_bc(mesh_reference_sizes_bc):
-    return mesh.create_unit_square(MPI.COMM_SELF, *mesh_reference_sizes_bc)
 
 
 def test_analytical_example_1(micro_mesh, macro_mesh, eps, atol):
@@ -190,6 +185,61 @@ def test_analytical_example_2(micro_mesh, macro_mesh, eps, atol):
     assert np.isclose(L2_error, 0, atol=atol), f"L^2 error too big {L2_error=}"
 
 
+def test_periodic_poisson_hmm_matches_periodic_homogenization(micro_mesh, macro_mesh, eps):
+    """For A = A(y) (no slow variable dependence), PoissonHMM should match PoissonPeriodicHMM."""
+
+    def A_y(y):
+        # Positive scalar diffusion coefficient, 1-periodic in y
+        return 2.0 + ufl.sin(2 * ufl.pi * y[0])
+
+    def A(x, y):
+        return A_y(y)
+
+    def f_rhs(x):
+        return 1.0
+
+    hmm = PoissonHMM(
+        macro_mesh,
+        A,
+        f_rhs,
+        micro_mesh,
+        eps,
+        petsc_options_cell_problem={
+            "ksp_type": "preonly",
+            "pc_type": "lu",
+            "pc_factor_mat_solver_type": "mumps",
+        },
+        petsc_options_global_solve={"ksp_type": "preonly", "pc_type": "lu"},
+    )
+    hmm.set_boundary_conditions(zero_dirichlet_bcs(hmm.function_space))
+    u_hmm = hmm.solve()
+
+    periodic = PoissonPeriodicHMM(
+        macro_mesh,
+        A_y,
+        f_rhs,
+        micro_mesh,
+        eps,
+        petsc_options_cell_problem={
+            "ksp_type": "preonly",
+            "pc_type": "lu",
+            "pc_factor_mat_solver_type": "mumps",
+        },
+        petsc_options_global_solve={"ksp_type": "preonly", "pc_type": "lu"},
+    )
+    periodic.set_boundary_conditions(zero_dirichlet_bcs(periodic.function_space))
+    u_periodic = periodic.solve()
+
+    error = calc_l2_error(u_hmm, u_periodic)
+    assert error < 1e-12, f"PoissonHMM and PoissonPeriodicHMM differ: {error=}"
+
+    A_periodic = petsc_matrix_to_numpy(periodic._lp.A)
+    A_hmm = petsc_matrix_to_numpy(hmm._A)
+    assert A_periodic.shape == A_hmm.shape, "Stiffness matrices are not the same shape"
+    matrix_rel = np.linalg.norm(A_periodic - A_hmm)
+    assert matrix_rel < 1e-8, f"Stiffness matrices differ: {matrix_rel=}"
+
+
 def test_3d(micro_mesh_3d, macro_mesh_3d, reference_mesh_3d, eps_3d, atol_3d):
     def A(x, y):
         return 1.1 + x[0] + ufl.sin(2 * ufl.pi * y[0])
@@ -242,6 +292,31 @@ def test_3d(micro_mesh_3d, macro_mesh_3d, reference_mesh_3d, eps_3d, atol_3d):
     assert relative_error < atol_3d, (
         f"Relative error in 3D HMM too high. This is a heuristic, to check for code regressions. {relative_error=}"
     )
+
+
+@pytest.fixture
+def eps_bc():
+    return 2 ** (-6)
+
+
+@pytest.fixture
+def atol_bc():
+    return 8e-4
+
+
+@pytest.fixture
+def atol_bc_no_homogenization():
+    return 5e-4
+
+
+@pytest.fixture
+def mesh_reference_sizes_bc():
+    return (2**10, 2**10)
+
+
+@pytest.fixture
+def reference_mesh_bc(mesh_reference_sizes_bc):
+    return mesh.create_unit_square(MPI.COMM_SELF, *mesh_reference_sizes_bc)
 
 
 def test_custom_boundary_condition(micro_mesh, macro_mesh, eps_bc, atol_bc, reference_mesh_bc):
@@ -395,4 +470,97 @@ def test_custom_boundary_condition_no_homogenization(
 
     assert relative_error < atol_bc_no_homogenization, (
         f"Relative error in HMM with custom boundary condition too high. This is a heuristic, to check for code regressions. {relative_error=}"
+    )
+
+
+@pytest.fixture
+def atol_stratified():
+    return 1e-2
+
+
+def test_stratified(micro_mesh, macro_mesh, eps_bc, atol_stratified, reference_mesh_bc):
+    """Simple integration test, to test if custom boundary conditions work."""
+
+    def A(x, y):
+        return 1.1 + x[0] + ufl.sin(2 * ufl.pi * y[0])
+
+    def f(x):
+        return 1
+
+    theta_factor = 0.2
+
+    def theta(x):
+        factor = theta_factor * (ufl.cos(ufl.pi / 2 * x[1])) * (ufl.cos(ufl.pi / 2 * x[0]))
+        x_0 = x[0] - factor * x[1]
+        x_1 = x[1] + factor * x[0]
+        return ufl.as_vector([x_0, x_1])
+
+    # actually Dtheta_tranposed
+    def Dtheta(x):
+        arg_0 = ufl.pi / 2 * x[0]
+        arg_1 = ufl.pi / 2 * x[1]
+        f = theta_factor * ufl.cos(arg_0) * ufl.cos(arg_1)
+        df_dx0 = -theta_factor * (ufl.pi / 2) * ufl.sin(arg_0) * ufl.cos(arg_1)
+        df_dx1 = -theta_factor * (ufl.pi / 2) * ufl.cos(arg_0) * ufl.sin(arg_1)
+
+        return ufl.as_matrix(
+            [[1 - x[1] * df_dx0, f + x[0] * df_dx0], [-f - x[1] * df_dx1, 1 + x[0] * df_dx1]]
+        )
+
+    def A_fem(x):
+        return A(x, theta(x) / eps_bc)
+
+    V_ref = fem.functionspace(reference_mesh_bc, ("Lagrange", 1))
+    u = ufl.TrialFunction(V_ref)
+    v = ufl.TestFunction(V_ref)
+    x = ufl.SpatialCoordinate(reference_mesh_bc)
+    lhs = ufl.inner(A_fem(x) * ufl.grad(u), ufl.grad(v)) * ufl.dx
+    rhs = ufl.inner(f(x), v) * ufl.dx
+    left = np.min(reference_mesh_bc.geometry.x[:, 0])
+    right = np.max(reference_mesh_bc.geometry.x[:, 0])
+    bottom = np.min(reference_mesh_bc.geometry.x[:, 1])
+    top = np.max(reference_mesh_bc.geometry.x[:, 1])
+    facets = mesh.locate_entities_boundary(
+        reference_mesh_bc,
+        dim=(reference_mesh_bc.topology.dim - 1),
+        marker=lambda x: np.isclose(x[0], left)
+        | np.isclose(x[0], right)
+        | np.isclose(x[1], bottom)
+        | np.isclose(x[1], top),
+    )
+    dofs = fem.locate_dofs_topological(
+        V_ref, entity_dim=(reference_mesh_bc.topology.dim - 1), entities=facets
+    )
+    bc = fem.dirichletbc(value=PETSc.ScalarType(0), dofs=dofs, V=V_ref)
+    bcs = [bc]
+    lp = LinearProblem(lhs, rhs, bcs, petsc_options={"ksp_type": "cg", "pc_type": "gamg"})
+    u_ref = lp.solve()
+
+    phmm = PoissonStratifiedHMM(
+        macro_mesh, A, f, micro_mesh, eps_bc, Dtheta, petsc_options_cell_problem={"ksp_atol": 1e-9}
+    )
+    left = np.min(macro_mesh.geometry.x[:, 0])
+    right = np.max(macro_mesh.geometry.x[:, 0])
+    bottom = np.min(macro_mesh.geometry.x[:, 1])
+    top = np.max(macro_mesh.geometry.x[:, 1])
+    facets = mesh.locate_entities_boundary(
+        macro_mesh,
+        dim=(macro_mesh.topology.dim - 1),
+        marker=lambda x: np.isclose(x[0], left)
+        | np.isclose(x[0], right)
+        | np.isclose(x[1], bottom)
+        | np.isclose(x[1], top),
+    )
+    dofs = fem.locate_dofs_topological(
+        phmm.function_space, entity_dim=(macro_mesh.topology.dim - 1), entities=facets
+    )
+    bc = fem.dirichletbc(value=PETSc.ScalarType(0), dofs=dofs, V=phmm.function_space)
+    phmm.set_boundary_conditions(bc)
+    u_phmm = phmm.solve()
+
+    u_ref_interpolated = interpolate_nonmatching(u_phmm._V, V_ref, u_ref)
+    relative_error = calc_l2_error(u_phmm, u_ref_interpolated) / calc_l2_norm(u_ref_interpolated)
+
+    assert relative_error < atol_stratified, (
+        f"Relative error in Stratified HMM too high. This is a heuristic, to check for code regressions. {relative_error=}"
     )

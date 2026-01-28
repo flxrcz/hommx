@@ -57,7 +57,7 @@ dofs_right = fem.locate_dofs_topological(
 )
 bc_right = fem.dirichletbc(value=PETSc.ScalarType(0), dofs=dofs_right, V=phmm.function_space)
 
-phmm.set_boundary_condtions([bc_left, bc_right])
+phmm.set_boundary_conditions([bc_left, bc_right])
 
 
 print(msh.topology.index_map(2).size_global)
