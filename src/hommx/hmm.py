@@ -1060,7 +1060,7 @@ class BasePeriodicHMM(ABC):
     def __init__(
         self,
         msh: mesh.Mesh,
-        A: Callable[[fem.Constant, ufl.SpatialCoordinate], ufl.Form],
+        A: Callable[[ufl.SpatialCoordinate], ufl.Form],
         f: Callable[[ufl.SpatialCoordinate], ufl.Form],
         msh_micro: mesh.Mesh,
         eps: float,
@@ -1115,6 +1115,7 @@ class BasePeriodicHMM(ABC):
         self._local_stiffness_forms: list[list[fem.Form]] | None = None
         self._a_form: fem.Form | None = None
         self._A_hom: np.ndarray | None = None
+        self._bcs: list[fem.DirichletBC] = []
 
     @property
     def function_space(self) -> fem.FunctionSpace:
@@ -1232,12 +1233,14 @@ class BasePeriodicHMM(ABC):
         return A_hom
 
     def solve(self) -> fem.Function:
-        effective_A = ufl.as_matrix(self.compute_effective_tensor())
+        if self._A_hom is None:
+            self.compute_effective_tensor()
+        effective_A = ufl.as_matrix(self._A_hom)
         a = ufl.inner(effective_A * ufl.grad(self._v_trial), ufl.grad(self._v_test)) * ufl.dx
-        lp = LinearProblem(
+        self._lp = LinearProblem(
             a, self._L, self._bcs, u=self._u, petsc_options=self._petsc_options_global_solve
         )
-        self._u = lp.solve()
+        self._u = self._lp.solve()
         return self._u
 
 
@@ -1248,7 +1251,7 @@ class PoissonPeriodicHMM(BasePeriodicHMM):
         return fem.functionspace(self._cell_mesh, ("Lagrange", 1))
 
     def _setup_macro_function_space(self) -> fem.FunctionSpace:
-        return fem.functionspace(self._cell_mesh, ("Lagrange", 1))
+        return fem.functionspace(self._msh, ("Lagrange", 1))
 
     def _build_lhs_form(self) -> fem.Form:
         return fem.form(ufl.inner(self._A_micro * ufl.grad(self._v), ufl.grad(self._z)) * ufl.dx)
