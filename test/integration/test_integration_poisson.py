@@ -6,7 +6,8 @@ from dolfinx.fem.petsc import LinearProblem
 from mpi4py import MPI
 from petsc4py import PETSc
 
-from hommx.hmm import PoissonHMM, PoissonStratifiedHMM
+from hommx.hmm import PoissonHMM, PoissonPeriodicHMM, PoissonStratifiedHMM
+from hommx.petsc_helper import petsc_matrix_to_numpy
 
 COMM = MPI.COMM_SELF
 
@@ -35,6 +36,25 @@ def calc_l2_norm(u1):
     return np.sqrt(
         COMM.allreduce(fem.assemble_scalar(fem.form(ufl.inner(u1, u1) * ufl.dx)), op=MPI.SUM)
     )
+
+
+def zero_dirichlet_bcs(V: fem.FunctionSpace) -> list[fem.DirichletBC]:
+    msh = V.mesh
+    tdim = msh.topology.dim
+    left = np.min(msh.geometry.x[:, 0])
+    right = np.max(msh.geometry.x[:, 0])
+    bottom = np.min(msh.geometry.x[:, 1])
+    top = np.max(msh.geometry.x[:, 1])
+    facets = mesh.locate_entities_boundary(
+        msh,
+        dim=(tdim - 1),
+        marker=lambda x: np.isclose(x[0], left)
+        | np.isclose(x[0], right)
+        | np.isclose(x[1], bottom)
+        | np.isclose(x[1], top),
+    )
+    dofs = fem.locate_dofs_topological(V, entity_dim=(tdim - 1), entities=facets)
+    return [fem.dirichletbc(PETSc.ScalarType(0), dofs, V)]
 
 
 @pytest.fixture
@@ -163,6 +183,61 @@ def test_analytical_example_2(micro_mesh, macro_mesh, eps, atol):
         fem.form(ufl.inner(phmm_solution - u_exact, phmm_solution - u_exact) * ufl.dx)
     )
     assert np.isclose(L2_error, 0, atol=atol), f"L^2 error too big {L2_error=}"
+
+
+def test_periodic_poisson_hmm_matches_periodic_homogenization(micro_mesh, macro_mesh, eps):
+    """For A = A(y) (no slow variable dependence), PoissonHMM should match PoissonPeriodicHMM."""
+
+    def A_y(y):
+        # Positive scalar diffusion coefficient, 1-periodic in y
+        return 2.0 + ufl.sin(2 * ufl.pi * y[0])
+
+    def A(x, y):
+        return A_y(y)
+
+    def f_rhs(x):
+        return 1.0
+
+    hmm = PoissonHMM(
+        macro_mesh,
+        A,
+        f_rhs,
+        micro_mesh,
+        eps,
+        petsc_options_cell_problem={
+            "ksp_type": "preonly",
+            "pc_type": "lu",
+            "pc_factor_mat_solver_type": "mumps",
+        },
+        petsc_options_global_solve={"ksp_type": "preonly", "pc_type": "lu"},
+    )
+    hmm.set_boundary_conditions(zero_dirichlet_bcs(hmm.function_space))
+    u_hmm = hmm.solve()
+
+    periodic = PoissonPeriodicHMM(
+        macro_mesh,
+        A_y,
+        f_rhs,
+        micro_mesh,
+        eps,
+        petsc_options_cell_problem={
+            "ksp_type": "preonly",
+            "pc_type": "lu",
+            "pc_factor_mat_solver_type": "mumps",
+        },
+        petsc_options_global_solve={"ksp_type": "preonly", "pc_type": "lu"},
+    )
+    periodic.set_boundary_conditions(zero_dirichlet_bcs(periodic.function_space))
+    u_periodic = periodic.solve()
+
+    error = calc_l2_error(u_hmm, u_periodic)
+    assert error < 1e-12, f"PoissonHMM and PoissonPeriodicHMM differ: {error=}"
+
+    A_periodic = petsc_matrix_to_numpy(periodic._lp.A)
+    A_hmm = petsc_matrix_to_numpy(hmm._A)
+    assert A_periodic.shape == A_hmm.shape, "Stiffness matrices are not the same shape"
+    matrix_rel = np.linalg.norm(A_periodic - A_hmm)
+    assert matrix_rel < 1e-8, f"Stiffness matrices differ: {matrix_rel=}"
 
 
 def test_3d(micro_mesh_3d, macro_mesh_3d, reference_mesh_3d, eps_3d, atol_3d):
