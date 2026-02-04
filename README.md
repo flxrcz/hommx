@@ -184,7 +184,9 @@ $$
 \end{equation}
 $$
 
+The resulting deformation calculated by the HMM can be seen in the following picture:
+
 ![hmm_elasticity](examples/linear_elasticity/deformed_beam.png)
 
-Resulting deformation calculated by the HMM.
+
 
