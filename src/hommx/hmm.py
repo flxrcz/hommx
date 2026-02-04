@@ -179,7 +179,7 @@ class BaseHMM(ABC):
         """Setup cell problem specifics"""
         # micro function space and periodic boundary conditions
         self._V_micro = self._setup_micro_function_space()
-        self._mpc = cell_problem.create_periodic_boundary_conditions(self._V_micro, self._bcs)
+        self._mpc = cell_problem.create_periodic_boundary_conditions(self._V_micro)
         self._points_micro = self._V_micro.tabulate_dof_coordinates()
         self._v_tilde = ufl.TrialFunction(self._V_micro)
         self._z = ufl.TestFunction(self._V_micro)
@@ -1113,7 +1113,7 @@ class BasePeriodicHMM(ABC):
         self._u = fem.Function(self._V_macro)
 
         self._V_micro = self._setup_micro_function_space()
-        self._mpc = cell_problem.create_periodic_boundary_conditions(self._V_micro, [])
+        self._mpc = cell_problem.create_periodic_boundary_conditions(self._V_micro)
         self._v = ufl.TrialFunction(self._V_micro)
         self._z = ufl.TestFunction(self._V_micro)
         self._y = ufl.SpatialCoordinate(self._cell_mesh)
