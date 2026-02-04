@@ -3,7 +3,7 @@ import pytest
 from dolfinx import fem, mesh
 from mpi4py import MPI
 
-from hommx.helpers import create_periodic_boundary_conditions
+from hommx.cell_problem import create_periodic_boundary_conditions
 
 
 @pytest.fixture
