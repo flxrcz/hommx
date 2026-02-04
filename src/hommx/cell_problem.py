@@ -19,9 +19,9 @@ def create_periodic_boundary_conditions(
 ) -> dolfinx_mpc.MultiPointConstraint:
     """Creates periodic boundary condition on the unit square or unit cube.
     For implementation details see
-    [`_create_periodic_boundary_conditions_2d`][hommx.helpers._create_periodic_boundary_conditions_2d]
+    [`_create_periodic_boundary_conditions_2d`][hommx.cell_problem._create_periodic_boundary_conditions_2d]
     and
-    [`_create_periodic_boundary_conditions_3d`][hommx.helpers._create_periodic_boundary_conditions_3d]
+    [`_create_periodic_boundary_conditions_3d`][hommx.cell_problem._create_periodic_boundary_conditions_3d]
     """
     msh = function_space.mesh
     if msh.topology.dim == 1:

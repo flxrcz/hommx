@@ -248,7 +248,7 @@ class BaseHMM(ABC):
             Please use the variables in _setup_cell_problem_variables inside the forms for efficiency.
 
         v_micro_i: i-th basis function on the element
-        v_micro_i: j-th basis function on the element
+        v_micro_j: j-th basis function on the element
         corrector_i: corrector corresponding to v_micro_i
         corrector_j: corrector corresponding to v_micro_j
         Returns:
@@ -268,9 +268,9 @@ class BaseHMM(ABC):
                 self._build_local_stiffness_contribution(
                     self._v_micros[i], self._v_micros[j], self._correctors[i], self._correctors[j]
                 )
-                for i in range(self._num_basis_functions_per_cell)
+                for j in range(self._num_basis_functions_per_cell)
             ]
-            for j in range(self._num_basis_functions_per_cell)
+            for i in range(self._num_basis_functions_per_cell)
         ]
 
     def set_boundary_conditions(self, bcs: list[fem.DirichletBC] | fem.DirichletBC):

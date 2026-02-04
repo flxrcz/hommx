@@ -45,7 +45,7 @@ where $A_{\varepsilon, ijkl}(x) = A_{ijkl}(x, x/\varepsilon)$.
 For now, please refer to the [`examples`](https://github.com/flxrcz/hommx/tree/main/examples) or take a look at the [`tests`](https://github.com/flxrcz/hommx/tree/main/test/integration).
 
 ## Installation
-hommx is available as a conda package on [Prefix]((https://prefix.dev/channels/flxrcz-forge/hommx)).
+hommx is available as a conda package on [Prefix](https://prefix.dev/channels/flxrcz-forge/packages/hommx).
 To install it simply run
 
 ```bash
@@ -102,7 +102,7 @@ $$
 | | | |
 |---|---|---|
 | ![coefficient](images/diffusion/diffusion_wavy_laminate_coefficient.png) | ![reference](images/diffusion/diffusion_wavy_laminate_reference.png) | ![hmm](images/diffusion/diffusion_wavy_laminate_stratified_hmm.png) |
-| $A_{\theta, \varepsilon}$ for $\varepsilon=2^{-2}$ | Reference solution computed on fine FEM mesh with $\varepsilon=$2^{-7}$ | HMM solution |
+| $A_{\theta, \varepsilon}$ for $\varepsilon=2^{-2}$ | Reference solution computed on fine FEM mesh with $\varepsilon=2^{-7}$ | HMM solution |
 
 
 And on an inclusion-like material given by
@@ -127,7 +127,7 @@ $$
 | | | |
 |---|---|---|
 | ![coefficient](images/diffusion/diffusion_wavy_inclusion_coefficient.png) | ![reference](images/diffusion/diffusion_wavy_inclusion_reference.png) | ![m](images/diffusion/diffusion_wavy_inclusion_stratified_hmm.png) |
-| $A_{\theta, \varepsilon}$ for $\varepsilon=2^{-4}$ | Reference solution computed on fine FEM mesh with $\varepsilon=$2^{-7}$ | HMM solution |
+| $A_{\theta, \varepsilon}$ for $\varepsilon=2^{-4}$ | Reference solution computed on fine FEM mesh with $\varepsilon=2^{-7}$ | HMM solution |
 
 ## Linear Elasticity
 The code that generated those pictures and solves the problems can be found in [elasticity examples](https://github.com/flxrcz/hommx/tree/main/examples/linear_elasticity) directory.

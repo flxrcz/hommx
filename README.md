@@ -102,7 +102,7 @@ $$
 | | | |
 |---|---|---|
 | ![coefficient](examples/diffusion/diffusion_wavy_laminate_coefficient.png) | ![reference](examples/diffusion/diffusion_wavy_laminate_reference.png) | ![hmm](examples/diffusion/diffusion_wavy_laminate_stratified_hmm.png) |
-| $A_{\theta, \varepsilon}$ for $\varepsilon=2^{-2}$ | Reference solution computed on fine FEM mesh with $\varepsilon=$2^{-7}$ | HMM solution |
+| $A_{\theta, \varepsilon}$ for $\varepsilon=2^{-2}$ | Reference solution computed on fine FEM mesh with $\varepsilon=2^{-7}$ | HMM solution |
 
 
 And on an inclusion-like material given by
@@ -127,7 +127,7 @@ $$
 | | | |
 |---|---|---|
 | ![coefficient](examples/diffusion/diffusion_wavy_inclusion_coefficient.png) | ![reference](examples/diffusion/diffusion_wavy_inclusion_reference.png) | ![m](examples/diffusion/diffusion_wavy_inclusion_stratified_hmm.png) |
-| $A_{\theta, \varepsilon}$ for $\varepsilon=2^{-4}$ | Reference solution computed on fine FEM mesh with $\varepsilon=$2^{-7}$ | HMM solution |
+| $A_{\theta, \varepsilon}$ for $\varepsilon=2^{-4}$ | Reference solution computed on fine FEM mesh with $\varepsilon=2^{-7}$ | HMM solution |
 
 ## Linear Elasticity
 The code that generated those pictures and solves the problems can be found in [elasticity examples](examples/linear_elasticity/) directory.

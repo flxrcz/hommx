@@ -13,16 +13,11 @@ H = 0.1
 delta = W / L
 _lambda_ = 1
 g = 0.05 * delta**2
-eps = H * 1 / 2**3
 
 
 # %%
 def epsilon(u):
     return 0.5 * (ufl.nabla_grad(u) + ufl.nabla_grad(u).T)
-
-
-def sigma(u):
-    return lambda_ * ufl.nabla_div(u) * ufl.Identity(len(u)) + 2 * mu * epsilon(u)
 
 
 def ufl_circle_indicator(x, y):
