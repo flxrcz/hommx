@@ -686,11 +686,11 @@ class PoissonStratifiedHMM(PoissonHMM):
     a_H(v_H, w_H) = \sum_{T\in \mathcal T_H} \frac{|T|}{|Y_\varepsilon(c_T)|} \int_{Y_\varepsilon(c_T)} A(c_T, \frac{x}{\varepsilon}) \nabla R_{T, h}(v_h)\cdot \nabla R_{T, h}(w_h) dx,
     $$
 
-    where $\nabla R_{T, h} = v_H|_{Y_\varepsilon(c_T)} + D\theta(x)\tilde{v_h}, \tilde{v_h}\in V_{h, \#}(Y_\varepsilon(c_T))$ is the reconstruction operator,
+    where $\nabla R_{T, h} = v_H|_{Y_\varepsilon(c_T)} + (D\theta(x))^\top\tilde{v_h}, \tilde{v_h}\in V_{h, \#}(Y_\varepsilon(c_T))$ is the reconstruction operator,
     where $\tilde{v_h}$ is the solution to
 
     $$
-    \int_{Y_\varepsilon(c_T)} A(c_T, \frac{x}{\varepsilon}) D\theta(x)\nabla\tilde{v_h} \cdot D\theta(x)\nabla z_h dx = - \int_{Y_\varepsilon(c_T)} A(c_T, \frac{x}{\varepsilon}) \nabla v_H \cdot D\theta(x)\nabla z_h dx
+    \int_{Y_\varepsilon(c_T)} A(c_T, \frac{x}{\varepsilon}) (D\theta(x))^\top\nabla\tilde{v_h} \cdot (D\theta(x))^\top\nabla z_h dx = - \int_{Y_\varepsilon(c_T)} A(c_T, \frac{x}{\varepsilon}) \nabla v_H \cdot (D\theta(x))^\top\nabla z_h dx
     $$
 
     note that the gradient of the macro-scale function $v_H$ appears on the RHS.
@@ -721,11 +721,28 @@ class PoissonStratifiedHMM(PoissonHMM):
         f: ufl.form,
         msh_micro: mesh.Mesh,
         eps: float,
-        Dtheta: Callable[[fem.Constant], ufl.Form],
+        Dtheta_transpose: Callable[[fem.Constant], ufl.Form],
         petsc_options_global_solve: dict | None = None,
         petsc_options_cell_problem: dict | None = None,
         petsc_options_prefix: str = "hommx_PoissonStratifiedHMM",
     ):
+        r"""Initializes the solver, meshes and boundary conditions.
+
+        Args:
+            msh: The macro mesh, on which we want to solve the oscillatory PDE.
+            A: The coefficient, should be callable like: `A(x)(y)`,
+                where x is a spatial coordinate on the macro mesh (the cell center c_T)
+                and y is a ufl.SpatialCoordinate on the microscopic mesh.
+                A needs to be 1-periodic in y.
+            f: The right hand side of the problem.
+            msh_micro: The microscopic mesh, needs to be the unit cell.
+                Should live on MPI.COMM_SELF since each process owns a whole copy.
+            eps: The microscopic scaling parameter.
+            Dtheta_transpose: transpose of the jacobian, i.e. $(\frac{\partial \theta_j}{\partial x_i})_{i, j=1, ..., d}$
+            petsc_options_global_solve: PETSc solver options for the global solver.
+            petsc_options_cell_problem: PETSc solver options for the cell problem solver.
+            petsc_options_prefix: Options prefix used for PETSc options.
+        """
         super().__init__(
             msh,
             A,
@@ -736,21 +753,21 @@ class PoissonStratifiedHMM(PoissonHMM):
             petsc_options_cell_problem,
             petsc_options_prefix,
         )
-        self._Dtheta = Dtheta
-        self._Dthetax = self._Dtheta(self._x_macro)
+        self._Dtheta_t = Dtheta_transpose
+        self._Dtheta_tx = self._Dtheta_t(self._x_macro)
 
     def _build_cell_problem_lhs(self) -> fem.Form:
         return fem.form(
             ufl.inner(
-                self._A_micro * self._Dthetax * ufl.grad(self._v_tilde),
-                self._Dthetax * ufl.grad(self._z),
+                self._A_micro * self._Dtheta_tx * ufl.grad(self._v_tilde),
+                self._Dtheta_tx * ufl.grad(self._z),
             )
             * ufl.dx
         )
 
     def _build_cell_problem_rhs(self, v_micro: fem.Function) -> fem.Form:
         return fem.form(
-            -ufl.inner(self._A_micro * ufl.grad(v_micro), self._Dthetax * ufl.grad(self._z))
+            -ufl.inner(self._A_micro * ufl.grad(v_micro), self._Dtheta_tx * ufl.grad(self._z))
             * ufl.dx
         )
 
@@ -765,8 +782,8 @@ class PoissonStratifiedHMM(PoissonHMM):
             1
             / self._eps**2
             * ufl.inner(
-                self._A_micro * (ufl.grad(v_micro_i) + self._Dthetax * ufl.grad(corrector_i)),
-                (ufl.grad(v_micro_j) + self._Dthetax * ufl.grad(corrector_j)),
+                self._A_micro * (ufl.grad(v_micro_i) + self._Dtheta_tx * ufl.grad(corrector_i)),
+                (ufl.grad(v_micro_j) + self._Dtheta_tx * ufl.grad(corrector_j)),
             )
             * ufl.dx
         )
@@ -963,7 +980,7 @@ class LinearElasticityStratifiedHMM(LinearElasticityHMM):
         f: Callable,
         msh_micro: mesh.Mesh,
         eps: float,
-        Dtheta: Callable[[fem.Constant], ufl.Form],
+        Dtheta_transpose: Callable[[fem.Constant], ufl.Form],
         petsc_options_global_solve: dict | None = None,
         petsc_options_cell_problem: dict | None = None,
         petsc_options_prefix: str = "hommx_LinearElasticityHMM",
@@ -980,6 +997,7 @@ class LinearElasticityStratifiedHMM(LinearElasticityHMM):
             msh_micro: The microscopic mesh, needs to be the unit cell.
                 Should live on MPI.COMM_SELF since each process owns a whole copy.
             eps: The microscopic scaling parameter.
+            Dtheta_t: transpose of the jacobian, i.e. $(\frac{\partial \theta_j}{\partial x_i})_{i, j=1, ..., d}$
             petsc_options_global_solve: PETSc solver options for the global solver.
             petsc_options_cell_problem: PETSc solver options for the cell problem solver.
             petsc_options_prefix: Options prefix used for PETSc options.
@@ -994,8 +1012,8 @@ class LinearElasticityStratifiedHMM(LinearElasticityHMM):
             petsc_options_cell_problem,
             petsc_options_prefix,
         )
-        self._Dtheta = Dtheta
-        self._Dthetax = self._Dtheta(self._x_macro)
+        self._Dtheta = Dtheta_transpose
+        self._Dtheta_tx = self._Dtheta(self._x_macro)
 
     def _setup_macro_function_space(self) -> fem.FunctionSpace:
         return fem.functionspace(self._msh, ("Lagrange", 1, (self._tdim,)))
@@ -1005,11 +1023,11 @@ class LinearElasticityStratifiedHMM(LinearElasticityHMM):
 
     def _e_D(self, u, Dtheta=None):
         if Dtheta is None:
-            Dtheta = self._Dthetax
+            Dtheta_t = self._Dtheta_tx
         grad = ufl.nabla_grad(
             u
         )  # ufl.grad does the jacobian, nabla_grad does J^T, order matters for elasticity!
-        return 1 / 2 * (Dtheta * grad + ufl.transpose(Dtheta * grad))
+        return 1 / 2 * (Dtheta_t * grad + ufl.transpose(Dtheta_t * grad))
 
     def _build_cell_problem_lhs(self) -> fem.Form:
         i, j, k, l = ufl.indices(4)
@@ -1101,16 +1119,13 @@ class BasePeriodicHMM(ABC):
         self._y = ufl.SpatialCoordinate(self._cell_mesh)
         self._A_micro = A(self._y)
 
-        self._direction_basis_vecs = [
+        self._basis_vecs = [
             ufl.as_vector([1.0 if i == j else 0.0 for i in range(self._tdim)])
             for j in range(self._tdim)
         ]
-        self._projection_basis_vecs = self._direction_basis_vecs
 
         # Predefine correctors (one per direction) and local stiffness form array
-        self._correctors: list[fem.Function] = [
-            fem.Function(self._V_micro) for _ in self._direction_basis_vecs
-        ]
+        self._correctors: list[fem.Function] = [fem.Function(self._V_micro) for _ in self._basis]
         self._local_stiffness_forms: list[list[fem.Form]] | None = None
         self._a_form: fem.Form | None = None
         self._A_hom: np.ndarray | None = None
@@ -1172,22 +1187,20 @@ class BasePeriodicHMM(ABC):
         return [
             [
                 self._build_local_stiffness_form(proj, direction, self._correctors[q])
-                for q, direction in enumerate(self._direction_basis())
+                for q, direction in enumerate(self._basis)
             ]
-            for proj in self._projection_basis()
+            for proj in self._basis
         ]
 
-    def _direction_basis(self):
-        return self._direction_basis_vecs
-
-    def _projection_basis(self):
-        return self._projection_basis_vecs
+    @property
+    def _basis(self):
+        return self._basis_vecs
 
     def _init_hom_tensor(self, num_directions: int) -> np.ndarray:
-        return np.zeros((len(self._projection_basis()), num_directions), dtype=float)
+        return np.zeros((len(self._basis), num_directions), dtype=float)
 
     def _accumulate_hom_tensor(self, A_hom: np.ndarray, direction_index: int):
-        for p, _ in enumerate(self._projection_basis()):
+        for p, _ in enumerate(self._basis):
             A_hom[p, direction_index] = fem.assemble_scalar(
                 self._local_stiffness_forms[p][direction_index]
             )
@@ -1212,7 +1225,7 @@ class BasePeriodicHMM(ABC):
         if self._local_stiffness_forms is None:
             self._local_stiffness_forms = self._build_local_stiffness_forms()
 
-        directions = self._direction_basis()
+        directions = self._basis
         A_hom = self._init_hom_tensor(len(directions))
 
         for q, direction in enumerate(directions):

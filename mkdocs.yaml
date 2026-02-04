@@ -119,7 +119,7 @@ extra_css:
 nav:
   - Getting Started: index.md
   - Usage:
-      - Example Usage: usage/usage.md
+      - Usage: usage/usage.md
   - API Reference:
       - hmm: api/hmm.md
       - helpers: api/helpers.md
