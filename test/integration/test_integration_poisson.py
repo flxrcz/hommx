@@ -537,7 +537,13 @@ def test_stratified(micro_mesh, macro_mesh, eps_bc, atol_stratified, reference_m
     u_ref = lp.solve()
 
     phmm = PoissonStratifiedHMM(
-        macro_mesh, A, f, micro_mesh, eps_bc, Dtheta, petsc_options_cell_problem={"ksp_atol": 1e-9}
+        macro_mesh,
+        A,
+        f,
+        micro_mesh,
+        eps_bc,
+        Dtheta,
+        petsc_options_cell_problem={"ksp_type": "gmres", "pc_type": "none"},
     )
     left = np.min(macro_mesh.geometry.x[:, 0])
     right = np.max(macro_mesh.geometry.x[:, 0])
