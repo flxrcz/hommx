@@ -98,25 +98,6 @@ def interpolate_nonmatching(
     return func_V_to
 
 
-def calc_l2_error(u1, u2):
-    # interpolate if needed
-    if u1.functionspace != u2.function_space:
-        u2 = interpolate_nonmatching(u1.function_space, u2.function_space, u2)
-    comm = u1.function_space.mesh.comm
-    return np.sqrt(
-        comm.allreduce(
-            fem.assemble_scalar(fem.form(ufl.inner(u1 - u2, u1 - u2) * ufl.dx)), op=MPI.SUM
-        )
-    )
-
-
-def calc_l2_norm(u1):
-    comm = u1.function_space.mesh.comm
-    return np.sqrt(
-        comm.allreduce(fem.assemble_scalar(fem.form(ufl.inner(u1, u1) * ufl.dx)), op=MPI.SUM)
-    )
-
-
 def A(x, y):
     return ufl.conditional(ufl.cos(2 * ufl.pi * y[0]) < 0, 5, 0.05)
 
