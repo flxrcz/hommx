@@ -206,15 +206,13 @@ class BaseHMM(ABC):
             fem.Function(self._V_micro) for _ in range(self._num_basis_functions_per_cell)
         ]
 
-    @abstractmethod
     def _setup_macro_function_space(self) -> fem.FunctionSpace:
-        """Setup macro-scale function space. Must be implemented by subclasses."""
-        pass
+        """Setup macro-scale function space."""
+        return fem.functionspace(self._msh, ("Lagrange", 1))
 
-    @abstractmethod
     def _setup_micro_function_space(self) -> fem.FunctionSpace:
-        """Setup micro-scale function space. Must be implemented by subclasses."""
-        pass
+        """Setup micro-scale function space."""
+        return fem.functionspace(self._cell_mesh, ("Lagrange", 1))
 
     @abstractmethod
     def _build_cell_problem_lhs(self) -> fem.Form:
@@ -606,12 +604,14 @@ class PoissonHMM(BaseHMM):
             facets = mesh.locate_entities_boundary(
                 self._msh,
                 dim=(self._msh.topology.dim - 1),
-                marker=lambda x: np.isclose(x[0], left)
-                | np.isclose(x[0], right)
-                | np.isclose(x[1], bottom)
-                | np.isclose(x[1], top)
-                | np.isclose(x[2], back)
-                | np.isclose(x[2], front),
+                marker=lambda x: (
+                    np.isclose(x[0], left)
+                    | np.isclose(x[0], right)
+                    | np.isclose(x[1], bottom)
+                    | np.isclose(x[1], top)
+                    | np.isclose(x[2], back)
+                    | np.isclose(x[2], front)
+                ),
             )
 
         if self._tdim == 2:
@@ -623,10 +623,12 @@ class PoissonHMM(BaseHMM):
             facets = mesh.locate_entities_boundary(
                 self._msh,
                 dim=(self._msh.topology.dim - 1),
-                marker=lambda x: np.isclose(x[0], left)
-                | np.isclose(x[0], right)
-                | np.isclose(x[1], bottom)
-                | np.isclose(x[1], top),
+                marker=lambda x: (
+                    np.isclose(x[0], left)
+                    | np.isclose(x[0], right)
+                    | np.isclose(x[1], bottom)
+                    | np.isclose(x[1], top)
+                ),
             )
 
         dofs = fem.locate_dofs_topological(
@@ -634,12 +636,6 @@ class PoissonHMM(BaseHMM):
         )
         bc = fem.dirichletbc(value=PETSc.ScalarType(0), dofs=dofs, V=self._V_macro)
         self._bcs = [bc]
-
-    def _setup_macro_function_space(self) -> fem.FunctionSpace:
-        return fem.functionspace(self._msh, ("Lagrange", 1))
-
-    def _setup_micro_function_space(self) -> fem.FunctionSpace:
-        return fem.functionspace(self._cell_mesh, ("Lagrange", 1))
 
     def _build_cell_problem_lhs(self) -> fem.Form:
         return fem.form(
