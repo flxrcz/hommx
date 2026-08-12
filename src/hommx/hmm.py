@@ -13,9 +13,15 @@ from dolfinx.fem.assemble import _assemble_vector_array
 from dolfinx.fem.petsc import LinearProblem, create_vector
 from mpi4py import MPI
 from petsc4py import PETSc
-from tqdm import tqdm
 
 import hommx.cell_problem as cell_problem
+
+try:
+    from tqdm import tqdm
+except ImportError:
+    def tqdm(iterable, *args, **kwargs):
+        """No-op stand-in for `tqdm.tqdm` used when tqdm is not installed."""
+        return iterable
 
 
 def _triangle_area(points):
