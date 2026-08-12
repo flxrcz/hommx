@@ -137,7 +137,9 @@ class BaseHMM(ABC):
         self._L = fem.form(L)
         self._b = create_vector(self._L)
         self._u = fem.Function(self._V_macro)
-        self._x = la.create_petsc_vector_wrap(self._u.x)
+        # PETSc view of the solution vector; kept separate from self._x, which stays the
+        # UFL spatial coordinate so that set_right_hand_side can rebuild the RHS form.
+        self._u_petsc = la.create_petsc_vector_wrap(self._u.x)
 
         # Setup matrix dimensions
         self._num_basis_functions_per_cell = (
@@ -558,7 +560,7 @@ class BaseHMM(ABC):
             self._b.assemble()
 
         self._solver.setOperators(self._A)
-        self._solver.solve(self._b, self._x)
+        self._solver.solve(self._b, self._u_petsc)
 
         if self._solver.getConvergedReason() < 0:
             self._logger.error(
