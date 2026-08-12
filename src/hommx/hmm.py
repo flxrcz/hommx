@@ -1109,9 +1109,9 @@ class LinearElasticityStratifiedHMM(LinearElasticityHMM):
         self._Dtheta = Dtheta_transpose
         self._Dtheta_tx = self._Dtheta(self._x_macro)
 
-    def _e_D(self, u, Dtheta=None):
-        if Dtheta is None:
-            Dtheta_t = self._Dtheta_tx
+    def _e_D(self, u):
+        r"""Strain of u pulled back through the coordinate transformation $\theta$."""
+        Dtheta_t = self._Dtheta_tx
         grad = ufl.nabla_grad(
             u
         )  # ufl.grad does the jacobian, nabla_grad does J^T, order matters for elasticity!
