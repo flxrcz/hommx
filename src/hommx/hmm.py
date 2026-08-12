@@ -4,6 +4,7 @@ import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 
+import basix
 import numpy as np
 import pyvista as pv
 import ufl
@@ -67,6 +68,8 @@ class BaseHMM(ABC):
         f: Callable[[ufl.SpatialCoordinate], ufl.Form],
         msh_micro: mesh.Mesh,
         eps: float,
+        macro_order: float = 1,
+        micro_order: float = 1,
         petsc_options_global_solve: dict | None = None,
         petsc_options_cell_problem: dict | None = None,
         petsc_options_prefix: str = "hommx_HMM",
@@ -94,6 +97,8 @@ class BaseHMM(ABC):
         self._f = f
         self._eps = eps
         self._cell_mesh = msh_micro
+        self._macro_order = macro_order
+        self._micro_order = micro_order
         if self._cell_mesh.comm.Compare(MPI.COMM_SELF) != 1:
             self._logger.error(
                 "Cell mesh shold be on MPI.COMM_SELF, other communicators may not work."
@@ -208,11 +213,11 @@ class BaseHMM(ABC):
 
     def _setup_macro_function_space(self) -> fem.FunctionSpace:
         """Setup macro-scale function space."""
-        return fem.functionspace(self._msh, ("Lagrange", 1))
+        return fem.functionspace(self._msh, ("Lagrange", self._macro_order))
 
     def _setup_micro_function_space(self) -> fem.FunctionSpace:
         """Setup micro-scale function space."""
-        return fem.functionspace(self._cell_mesh, ("Lagrange", 1))
+        return fem.functionspace(self._cell_mesh, ("Lagrange", self._micro_order))
 
     @abstractmethod
     def _build_cell_problem_lhs(self) -> fem.Form:
@@ -349,22 +354,75 @@ class BaseHMM(ABC):
         # update the x value in the precompiled forms containing A
         self._x_macro.value = c_t
 
-        for i, local_dof in enumerate(local_dofs_unrolled):
-            self._v_macro.x.array[:] = 0.0
-            self._v_macro.x.array[local_dof] = 1.0
-            self._interpolate_macro_to_micro(self._v_macro, self._v_micros[i], cell_index)
-            self._calculate_corrector(cell_index, i, self._correctors[i])
-
-        # local stiffness matrix
+        # Get quadrature points and weights for the macro cell
+        quadrature_points, quadrature_weights = self._get_cell_quadrature_rule(cell_vertices)
+        # print(quadrature_weights)
         S_loc = np.zeros((self._num_basis_functions_per_cell, self._num_basis_functions_per_cell))
-        for i in range(S_loc.shape[0]):
-            for j in range(S_loc.shape[1]):
-                S_loc[i, j] = fem.assemble_scalar(self._local_stiffness_forms[i][j])
+
+        # Loop over quadrature points
+        for q_point, q_weight in zip(quadrature_points, quadrature_weights):
+            # Update macro position for this quadrature point
+            self._x_macro.value = q_point
+
+            # Solve cell problem for all basis functions at this quadrature point
+            for i, local_dof in enumerate(local_dofs_unrolled):
+                self._v_macro.x.array[:] = 0.0
+                self._v_macro.x.array[local_dof] = 1.0
+                self._interpolate_macro_to_micro(self._v_macro, self._v_micros[i], cell_index)
+                self._calculate_corrector(cell_index, i, self._correctors[i])
+
+            # Assemble local stiffness at this quadrature point
+            S_loc_q = np.zeros(
+                (self._num_basis_functions_per_cell, self._num_basis_functions_per_cell)
+            )
+            for i in range(S_loc_q.shape[0]):
+                for j in range(S_loc_q.shape[1]):
+                    S_loc_q[i, j] = fem.assemble_scalar(self._local_stiffness_forms[i][j])
+
+            # Add weighted contribution
+            S_loc += q_weight * S_loc_q
 
         # scale contribution
-        cell_area = self._volume_function(cell_vertices)
+        cell_area = 1 # rescaling is taken care of in the quadrature rule
         Y_area = self._cell_mesh_area
         return S_loc * cell_area / Y_area
+
+
+    def _get_cell_quadrature_rule(self, cell_vertices: np.ndarray):
+        """Get quadrature points and weights for a cell.
+
+        Returns:
+            tuple: (quadrature_points, quadrature_weights)
+                where quadrature_points has shape (num_qp, gdim)
+        """
+        c_t = np.mean(cell_vertices, axis=0)
+        cell_type = self._V_macro.ufl_element().cell_type
+        degree = self._V_macro.ufl_element().degree
+
+        if self._tdim == 1:
+            J = np.column_stack([
+                cell_vertices[1] - cell_vertices[0],
+            ])
+
+        if self._tdim == 2:
+            J = np.column_stack([
+                cell_vertices[1] - cell_vertices[0],
+                cell_vertices[2] - cell_vertices[0]
+            ])
+        if self._tdim == 3:
+            J = np.column_stack([
+                cell_vertices[1] - cell_vertices[0],
+                cell_vertices[2] - cell_vertices[0],
+                cell_vertices[3] - cell_vertices[0]
+            ])
+        det_J = np.abs(np.linalg.det(J[:self._tdim, :self._tdim]))
+
+        # if degree == 1:
+        #     return ([c_t], [det_J]) #safety fallback in case of P1 elements
+        ref_points, ref_weights = basix.make_quadrature(cell_type, 2*(degree - 1))
+
+        phys_points = cell_vertices[0] + ref_points @ J.T
+        return (phys_points, ref_weights*det_J)
 
     def _interpolate_macro_to_micro(
         self,
@@ -563,6 +621,8 @@ class PoissonHMM(BaseHMM):
         f: Callable,
         msh_micro: mesh.Mesh,
         eps: float,
+        macro_order: float = 1,
+        micro_order: float = 1,
         petsc_options_global_solve: dict | None = None,
         petsc_options_cell_problem: dict | None = None,
         petsc_options_prefix: str = "hommx_PoissonHMM",
@@ -589,6 +649,8 @@ class PoissonHMM(BaseHMM):
             f,
             msh_micro,
             eps,
+            macro_order,
+            micro_order,
             petsc_options_global_solve,
             petsc_options_cell_problem,
             petsc_options_prefix,
@@ -718,6 +780,8 @@ class PoissonStratifiedHMM(PoissonHMM):
         msh_micro: mesh.Mesh,
         eps: float,
         Dtheta_transpose: Callable[[fem.Constant], ufl.Form],
+        macro_order: float = 1,
+        micro_order: float = 1,
         petsc_options_global_solve: dict | None = None,
         petsc_options_cell_problem: dict | None = None,
         petsc_options_prefix: str = "hommx_PoissonStratifiedHMM",
@@ -745,6 +809,8 @@ class PoissonStratifiedHMM(PoissonHMM):
             f,
             msh_micro,
             eps,
+            macro_order,
+            micro_order,
             petsc_options_global_solve,
             petsc_options_cell_problem,
             petsc_options_prefix,
@@ -843,6 +909,8 @@ class LinearElasticityHMM(BaseHMM):
         f: Callable,
         msh_micro: mesh.Mesh,
         eps: float,
+        macro_order: float = 1,
+        micro_order: float = 1,
         petsc_options_global_solve: dict | None = None,
         petsc_options_cell_problem: dict | None = None,
         petsc_options_prefix: str = "hommx_LinearElasticityHMM",
@@ -869,16 +937,18 @@ class LinearElasticityHMM(BaseHMM):
             f,
             msh_micro,
             eps,
+            macro_order,
+            micro_order,
             petsc_options_global_solve,
             petsc_options_cell_problem,
             petsc_options_prefix,
         )
 
     def _setup_macro_function_space(self) -> fem.FunctionSpace:
-        return fem.functionspace(self._msh, ("Lagrange", 1, (self._tdim,)))
+        return fem.functionspace(self._msh, ("Lagrange", self._macro_order, (self._tdim,)))
 
     def _setup_micro_function_space(self) -> fem.FunctionSpace:
-        return fem.functionspace(self._cell_mesh, ("Lagrange", 1, (self._tdim,)))
+        return fem.functionspace(self._cell_mesh, ("Lagrange", self._micro_order, (self._tdim,)))
 
     @staticmethod
     def _e(u):
@@ -977,6 +1047,8 @@ class LinearElasticityStratifiedHMM(LinearElasticityHMM):
         msh_micro: mesh.Mesh,
         eps: float,
         Dtheta_transpose: Callable[[fem.Constant], ufl.Form],
+        macro_order: float = 1,
+        micro_order: float = 1,
         petsc_options_global_solve: dict | None = None,
         petsc_options_cell_problem: dict | None = None,
         petsc_options_prefix: str = "hommx_LinearElasticityHMM",
@@ -1004,18 +1076,14 @@ class LinearElasticityStratifiedHMM(LinearElasticityHMM):
             f,
             msh_micro,
             eps,
+            macro_order,
+            micro_order,
             petsc_options_global_solve,
             petsc_options_cell_problem,
             petsc_options_prefix,
         )
         self._Dtheta = Dtheta_transpose
         self._Dtheta_tx = self._Dtheta(self._x_macro)
-
-    def _setup_macro_function_space(self) -> fem.FunctionSpace:
-        return fem.functionspace(self._msh, ("Lagrange", 1, (self._tdim,)))
-
-    def _setup_micro_function_space(self) -> fem.FunctionSpace:
-        return fem.functionspace(self._cell_mesh, ("Lagrange", 1, (self._tdim,)))
 
     def _e_D(self, u, Dtheta=None):
         if Dtheta is None:
@@ -1077,6 +1145,8 @@ class BasePeriodicHMM(ABC):
         f: Callable[[ufl.SpatialCoordinate], ufl.Form],
         msh_micro: mesh.Mesh,
         eps: float,
+        macro_order: float = 1,
+        micro_order: float = 1,
         petsc_options_global_solve: dict | None = None,
         petsc_options_cell_problem: dict | None = None,
         petsc_options_prefix: str = "hommx_periodicHMM",
@@ -1089,6 +1159,8 @@ class BasePeriodicHMM(ABC):
         self._eps = eps
         self._cell_mesh = msh_micro
         self._tdim = msh_micro.topology.dim
+        self._macro_order = macro_order
+        self._micro_order = micro_order
         if self._tdim not in (2, 3):
             raise ValueError("Only 2D and 3D periodic homogenization supported.")
         self._cell_volume = fem.assemble_scalar(fem.form(1 * ufl.dx(domain=self._cell_mesh)))
@@ -1256,10 +1328,10 @@ class PoissonPeriodicHMM(BasePeriodicHMM):
     """Periodic homogenization for scalar diffusion (A = A(y))."""
 
     def _setup_micro_function_space(self) -> fem.FunctionSpace:
-        return fem.functionspace(self._cell_mesh, ("Lagrange", 1))
+        return fem.functionspace(self._cell_mesh, ("Lagrange", self._micro_order))
 
     def _setup_macro_function_space(self) -> fem.FunctionSpace:
-        return fem.functionspace(self._msh, ("Lagrange", 1))
+        return fem.functionspace(self._msh, ("Lagrange", self._macro_order))
 
     def _build_lhs_form(self) -> fem.Form:
         return fem.form(ufl.inner(self._A_micro * ufl.grad(self._v), ufl.grad(self._z)) * ufl.dx)
