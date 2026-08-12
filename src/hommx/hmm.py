@@ -155,6 +155,8 @@ class BaseHMM(ABC):
             )
         )
         self._needs_reassembly = True
+        # Pristine copy of the assembled operator before Dirichlet BCs are applied.
+        self._A_unconstrained = None
 
         # Setup solver
         if petsc_options_cell_problem is None:
@@ -301,8 +303,6 @@ class BaseHMM(ABC):
             self._bcs = bcs
         else:
             self._bcs = [bcs]
-        # Mark for reassembly; we keep the preallocation and just zero on next assembly
-        self._needs_reassembly = True
 
     def set_right_hand_side(self, f: Callable[[ufl.SpatialCoordinate], ufl.Form]):
         """Sets the right hand side
@@ -346,6 +346,10 @@ class BaseHMM(ABC):
                 S_loc.flatten(),
                 addv=PETSc.InsertMode.ADD_VALUES,
             )
+
+        # Keep an unconstrained copy so that solve() can re-apply Dirichlet conditions
+        self._A.assemble()
+        self._A_unconstrained = self._A.copy()
 
         self._needs_reassembly = False
 
@@ -519,6 +523,9 @@ class BaseHMM(ABC):
         """
         # assemble LHS matrix
         self._assemble_stiffness()
+        # Applying the Dirichlet conditions below mutates the operator in place
+        # (zeroRowsColumns), so start every solve from the unconstrained matrix.
+        self._A = self._A_unconstrained.copy()
         self._A.assemble()
 
         # assemble rhs
