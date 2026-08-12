@@ -572,3 +572,68 @@ def test_stratified(micro_mesh, macro_mesh, eps_bc, atol_stratified, reference_m
     assert relative_error < atol_stratified, (
         f"Relative error in Stratified HMM too high. This is a heuristic, to check for code regressions. {relative_error=}"
     )
+
+
+
+
+
+def test_order_convergence():
+    """For a smooth coefficient with a known exact homogenized solution, increasing the
+    macro polynomial order on a fixed, coarse macro mesh should meaningfully reduce the
+    L^2 error. The micro mesh is kept fine and second order so its own discretization
+    error doesn't mask the effect of the macro order.
+    """
+
+    def _smooth_periodic_A(x, y):
+        """A smooth, purely y-periodic coefficient (matches test_analytical_example_1)."""
+        return 1 / (2 + ufl.cos(2 * ufl.pi * y[0]))
+
+
+    def _smooth_periodic_f(x):
+        return ufl.pi**2 * (1 / 2 + 1 / ufl.sqrt(3)) * ufl.sin(ufl.pi * x[0]) * ufl.sin(ufl.pi * x[1])
+
+
+    def _smooth_periodic_solution(x):
+        return ufl.sin(ufl.pi * x[0]) * ufl.sin(ufl.pi * x[1])
+
+
+    def _smooth_periodic_l2_error(macro_mesh, micro_mesh, eps, macro_order, micro_order):
+        phmm = PoissonHMM(
+            macro_mesh,
+            _smooth_periodic_A,
+            _smooth_periodic_f,
+            micro_mesh,
+            eps,
+            macro_order=macro_order,
+            micro_order=micro_order,
+            petsc_options_cell_problem={"ksp_atol": 1e-10},
+        )
+        u = phmm.solve()
+        u_exact = _smooth_periodic_solution(ufl.SpatialCoordinate(macro_mesh))
+        return np.sqrt(fem.assemble_scalar(fem.form(ufl.inner(u - u_exact, u - u_exact) * ufl.dx)))
+
+    macro_mesh = mesh.create_unit_square(MPI.COMM_SELF, 6, 6)
+    micro_mesh = mesh.create_unit_square(MPI.COMM_SELF, 15, 15)
+    eps = 0.02
+
+    error_p1 = _smooth_periodic_l2_error(macro_mesh, micro_mesh, eps, macro_order=1, micro_order=1)
+    error_p2 = _smooth_periodic_l2_error(macro_mesh, micro_mesh, eps, macro_order=2, micro_order=1)
+    error_p3 = _smooth_periodic_l2_error(macro_mesh, micro_mesh, eps, macro_order=3, micro_order=1)
+
+
+    assert error_p2 < error_p1 and error_p3 < error_p2, (
+        f"Increasing macro_order did not reduce the L^2 error: {error_p1=}, {error_p2=}, {error_p3=}"
+    )
+
+    macro_mesh = mesh.create_unit_square(MPI.COMM_SELF, 15, 15)
+    micro_mesh = mesh.create_unit_square(MPI.COMM_SELF, 6, 6)
+    eps = 0.02
+
+    error_p1 = _smooth_periodic_l2_error(macro_mesh, micro_mesh, eps, macro_order=1, micro_order=1)
+    error_p2 = _smooth_periodic_l2_error(macro_mesh, micro_mesh, eps, macro_order=1, micro_order=2)
+    error_p2 = _smooth_periodic_l2_error(macro_mesh, micro_mesh, eps, macro_order=1, micro_order=3)
+
+    assert error_p2 < error_p1 and error_p3 < error_p2, (
+        f"Increasing micro_order did not reduce the L^2 error: {error_p1=}, {error_p2=}, {error_p3=}"
+    )
+

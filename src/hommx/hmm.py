@@ -199,6 +199,19 @@ class BaseHMM(ABC):
         # placeholder function that can be used in the cell problems
         self._v_macro = fem.Function(self._V_macro)
 
+        # quadrature rule in macro reference-cell coordinates, reused both for the
+        # macro-cell quadrature loop and for evaluating grad(v_macro) below.
+        cell_type = self._V_macro.ufl_element().cell_type
+        macro_degree = self._V_macro.ufl_element().degree
+        self._ref_quadrature_points, self._ref_quadrature_weights = basix.make_quadrature(
+            cell_type, 2 * (macro_degree - 1)
+        )
+        # precompiled expression for evaluating the gradient of v_macro (a macro basis
+        # function, see _compute_local_stiffness) at those quadrature points
+        self._grad_v_macro_expr = fem.Expression(
+            ufl.grad(self._v_macro), self._ref_quadrature_points
+        )
+
         # coefficient
         self._A_micro = self._coeff(self._x_macro, self._y)
 
@@ -359,16 +372,29 @@ class BaseHMM(ABC):
         # print(quadrature_weights)
         S_loc = np.zeros((self._num_basis_functions_per_cell, self._num_basis_functions_per_cell))
 
+        # Gradient of each macro basis function at every quadrature point on this cell.
+        # These drive the affine (linearized) reconstruction of v_macro on the micro
+        # domain, following Abdulle et al., instead of pointwise-interpolating v_macro.
+        grad_v_macro_qp = []
+        for local_dof in local_dofs_unrolled:
+            self._v_macro.x.array[:] = 0.0
+            self._v_macro.x.array[local_dof] = 1.0
+            grad_v_macro_qp.append(
+                self._grad_v_macro_expr.eval(
+                    self._msh, np.array([cell_index], dtype=np.int32)
+                ).reshape(len(quadrature_points), self._bs, self._tdim)
+            )
+
         # Loop over quadrature points
-        for q_point, q_weight in zip(quadrature_points, quadrature_weights):
+        for q_index, (q_point, q_weight) in enumerate(zip(quadrature_points, quadrature_weights)):
             # Update macro position for this quadrature point
             self._x_macro.value = q_point
 
             # Solve cell problem for all basis functions at this quadrature point
-            for i, local_dof in enumerate(local_dofs_unrolled):
-                self._v_macro.x.array[:] = 0.0
-                self._v_macro.x.array[local_dof] = 1.0
-                self._interpolate_macro_to_micro(self._v_macro, self._v_micros[i], cell_index)
+            for i in range(self._num_basis_functions_per_cell):
+                self._interpolate_macro_to_micro(
+                    grad_v_macro_qp[i][q_index], self._v_micros[i]
+                )
                 self._calculate_corrector(cell_index, i, self._correctors[i])
 
             # Assemble local stiffness at this quadrature point
@@ -395,10 +421,6 @@ class BaseHMM(ABC):
             tuple: (quadrature_points, quadrature_weights)
                 where quadrature_points has shape (num_qp, gdim)
         """
-        c_t = np.mean(cell_vertices, axis=0)
-        cell_type = self._V_macro.ufl_element().cell_type
-        degree = self._V_macro.ufl_element().degree
-
         if self._tdim == 1:
             J = np.column_stack([
                 cell_vertices[1] - cell_vertices[0],
@@ -417,36 +439,36 @@ class BaseHMM(ABC):
             ])
         det_J = np.abs(np.linalg.det(J[:self._tdim, :self._tdim]))
 
-        # if degree == 1:
-        #     return ([c_t], [det_J]) #safety fallback in case of P1 elements
-        ref_points, ref_weights = basix.make_quadrature(cell_type, 2*(degree - 1))
-
-        phys_points = cell_vertices[0] + ref_points @ J.T
-        return (phys_points, ref_weights*det_J)
+        phys_points = cell_vertices[0] + self._ref_quadrature_points @ J.T
+        return (phys_points, self._ref_quadrature_weights * det_J)
 
     def _interpolate_macro_to_micro(
         self,
-        v_macro: fem.Function,
+        grad_v_macro: np.ndarray,
         v_micro: fem.Function,
-        cell_index: int,
     ) -> fem.Function:
-        """Interpolates a function from the macro mesh onto the micro mesh.
+        r"""Builds the affine reconstruction of a macro function on the micro mesh.
 
-        Since we know that the micro domain is contained inside one macro cell,
-        we can avoid dolfinx interpolate_nonmatching and instead rely on evaluating directly.
+        Following Abdulle et al., rather than the exact pointwise values of the macro
+        function $v_H$, we use its linearization around the current macro point $c_T$
+        (a cell vertex, centroid, or quadrature point, depending on the caller):
+        $v_H(c_T) + \nabla v_H(c_T) \cdot (x - c_T)$. Since $x - c_T = \varepsilon(y - y_c)$
+        for $y$ on the micro mesh (with $y_c$ its center), and only $\nabla v_\text{micro}$
+        ever enters the cell problems and local stiffness forms (never $v_\text{micro}$
+        itself), the constant term $v_H(c_T)$ does not contribute and is dropped: any
+        conforming Lagrange micro space reproduces the affine part exactly, so
+        $\nabla v_\text{micro} = \nabla v_H(c_T)$ everywhere on the micro domain.
 
         Args:
-            v_macro: Macro function
-            cell_index: cell index on which the cell problem is solved
-            v_micro: Micro function, if none is provided one is created
+            grad_v_macro: gradient of the macro function at the current macro point,
+                shape ``(block_size, tdim)``.
+            v_micro: Micro function to fill in-place.
 
         """
-        cells = np.full(self._points_micro.shape[0], cell_index, dtype=np.int32)
-        c_t = self._x_macro.value
-        micro_center = np.mean(self._points_micro, axis=0)
-        v_micro.x.array[:] = v_macro.eval(
-            (self._points_micro - micro_center) * self._eps + c_t, cells=cells
-        ).flatten()
+        points_micro = self._points_micro[:, : self._tdim]
+        micro_center = np.mean(points_micro, axis=0)
+        displacement = (points_micro - micro_center) * self._eps
+        v_micro.x.array[:] = (displacement @ grad_v_macro.T).flatten()
 
         return v_micro
 
