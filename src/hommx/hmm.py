@@ -402,12 +402,9 @@ class BaseHMM(ABC):
             # Update macro position for this quadrature point
             self._x_macro.value = q_point
 
-            # Solve cell problem for all basis functions at this quadrature point
             for i in range(self._num_basis_functions_per_cell):
-                self._interpolate_macro_to_micro(
-                    grad_v_macro_qp[i][q_index], self._v_micros[i]
-                )
-                self._calculate_corrector(cell_index, i, self._correctors[i])
+                self._interpolate_macro_to_micro(grad_v_macro_qp[i][q_index], self._v_micros[i])
+            self._calculate_correctors(cell_index)
 
             # Assemble local stiffness at this quadrature point
             S_loc_q = np.zeros(
@@ -484,42 +481,35 @@ class BaseHMM(ABC):
 
         return v_micro
 
-    def _calculate_corrector(
-        self,
-        cell_index: int,
-        cell_problem_index: int,
-        corrector: fem.Function | None = None,
-    ):
-        """Calculates the corrector by solving the cell problem.
+    def _calculate_correctors(self, cell_index: int) -> list[fem.Function]:
+        """Calculates the correctors for all macroscopic basis functions at the current point.
 
         Notes:
-            The micro function for which the corrector should be calculated does not show up,
-            since the precompiled form uses a constant that is updated in _interpolate_macro_to_micro.
+            The micro functions for which the correctors are calculated do not show up here,
+            since the precompiled forms use placeholders that are updated in
+            _interpolate_macro_to_micro.
 
         Args:
             cell_index: the process-local index of the cell
                 on which the cell problem should be solved
-            cell_problem_index: local index of the basis function for which the corrector should be calculated.
-                By default this is used to determine which RHS to use, so that the right basis function is used on the rhs.
-            corrector: function on the micro mesh that stores the corrector,
-                if none is provided one is created
-        """
-        if corrector is None:
-            corrector = fem.Function(self._V_micro)
 
+        Returns:
+            The list of correctors, one per macroscopic basis function.
+        """
         problem = cell_problem.PeriodicLinearProblem(
             self._a_micro_compiled,
-            self._L_micro_compiled[cell_problem_index],
+            self._L_micro_compiled[0],
             self._mpc,
             petsc_options=self._petsc_options_cell_problem,
         )
-        v_tilde_sol = problem.solve()
-        if problem._solver.getConvergedReason() < 0:
-            self._logger.error(
-                f"Something went wrong in the cell problem solving for cell {cell_index}. PETSc solver failed with reason {problem._solver.getConvergedReason()}"
-            )
-        corrector.x.array[:] = v_tilde_sol.x.array
-        return corrector
+        for i in range(self._num_basis_functions_per_cell):
+            v_tilde_sol = problem.solve_with_rhs(self._L_micro_compiled[i])
+            if problem.solver.getConvergedReason() < 0:
+                self._logger.error(
+                    f"Something went wrong in the cell problem solving for cell {cell_index}. PETSc solver failed with reason {problem.solver.getConvergedReason()}"
+                )
+            self._correctors[i].x.array[:] = v_tilde_sol.x.array
+        return self._correctors
 
     def solve(self) -> fem.Function:
         """Assemble the LHS, RHS and solve the problem
