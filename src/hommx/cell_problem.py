@@ -362,12 +362,12 @@ class PeriodicLinearProblem(dolfinx_mpc.LinearProblem):
         _clear_petsc_options(solver_prefix)
         assert hasattr(self, "_A")
         comm = self._a.mesh.comm
-        nullspace_vector = PETSc.Vec().create(comm)
-        nullspace_vector.setSizes(self.A.getSize()[0])
-        nullspace_vector.setUp()
-        nullspace_vector.set(1.0)
-        nullspace_vector.setValues(self._mpc.slaves, np.zeros_like(self._mpc.slaves))
-        nullspace_vector.assemble()
+        self._nullspace_function = fem.Function(self._mpc.function_space)
+        self._nullspace_function.x.array[:] = 1.0
+        self._nullspace_function.x.array[self._mpc.slaves] = 0.0
+        self._nullspace_function.x.scatter_forward()
+        nullspace_vector = self._nullspace_function.x.petsc_vec
+        nullspace_vector.normalize()
         nullspace = PETSc.NullSpace().create(vectors=(nullspace_vector,), comm=comm)
         # self._A.setOption(PETSc.Mat.Option.SYMMETRIC, True)
         self._A.setNullSpace(nullspace)
