@@ -41,10 +41,7 @@ def _unroll_dofs(dofs: np.ndarray, bs: int, dtype=PETSc.IntType):
         return dofs
     dofs = np.asarray(dofs)
     assert len(dofs.shape) == 1, "Only flattened dof arrays allowed"
-    ret = np.array(
-        [[dofs[i] * bs + k for k in range(bs)] for i in range(len(dofs))], dtype=dtype
-    ).flatten()
-    return ret
+    return (dofs[:, None] * bs + np.arange(bs)).astype(dtype).ravel()
 
 
 def _local_to_global_unrolled(dofs: np.ndarray, V: fem.FunctionSpace):
