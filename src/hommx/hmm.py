@@ -24,17 +24,6 @@ except ImportError:
         return iterable
 
 
-def _triangle_area(points):
-    return 0.5 * np.linalg.norm(np.cross(points[1] - points[0], points[2] - points[0]))
-
-
-def _tetrahedron_volume(points):
-    return (
-        np.abs(np.linalg.det([points[1] - points[0], points[2] - points[0], points[3] - points[0]]))
-        / 6.0
-    )
-
-
 def _unroll_dofs(dofs: np.ndarray, bs: int, dtype=PETSc.IntType):
     """unrolls blocked dofs into array indices"""
     if bs == 1:  # non-blocked dofs don't need to be unrolled
@@ -121,12 +110,6 @@ class BaseHMM(ABC):
             )
         if self._tdim != msh_micro.topology.dim:
             raise ValueError("Micro and macro mesh should have the same dimensionality.")
-
-        # Setup dimension-dependent functions
-        if self._tdim == 3:
-            self._volume_function = _tetrahedron_volume
-        else:
-            self._volume_function = _triangle_area
 
         # Setup function space (subclass-specific)
         self._V_macro = self._setup_macro_function_space()
@@ -321,7 +304,7 @@ class BaseHMM(ABC):
         if not self._needs_reassembly:
             return
 
-        # Reuse preallocation; just clear existing values
+        # Keep the structure and clear values
         self._A.zeroEntries()
 
         self._setup_cell_problem_forms()
@@ -372,13 +355,8 @@ class BaseHMM(ABC):
         # Ensure connectivity between cells and vertices is available
         self._msh.topology.create_connectivity(self._tdim, 0)
         cell_vertices = self._macro_coordinates[local_dofs]
-        c_t = np.mean(cell_vertices, axis=0)
-        # update the x value in the precompiled forms containing A
-        self._x_macro.value = c_t
 
-        # Get quadrature points and weights for the macro cell
         quadrature_points, quadrature_weights = self._get_cell_quadrature_rule(cell_vertices)
-        # print(quadrature_weights)
         S_loc = np.zeros((self._num_basis_functions_per_cell, self._num_basis_functions_per_cell))
 
         # Gradient of each macro basis function at every quadrature point on this cell.
@@ -414,11 +392,8 @@ class BaseHMM(ABC):
             # Add weighted contribution
             S_loc += q_weight * S_loc_q
 
-        # scale contribution
-        cell_area = 1 # rescaling is taken care of in the quadrature rule
-        Y_area = self._cell_mesh_area
-        return S_loc * cell_area / Y_area
-
+        # Scale contribution, scale by |Y| (in practice should be 1, better safe than sorry)
+        return S_loc / self._cell_mesh_area
 
     def _get_cell_quadrature_rule(self, cell_vertices: np.ndarray):
         """Get quadrature points and weights for a cell.
