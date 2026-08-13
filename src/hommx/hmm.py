@@ -110,10 +110,16 @@ class BaseHMM(ABC):
             )
         if self._tdim != msh_micro.topology.dim:
             raise ValueError("Micro and macro mesh should have the same dimensionality.")
+        nodes_per_cell = self._msh.geometry.dofmap.shape[1]
+        if nodes_per_cell != self._tdim + 1:
+            raise ValueError(
+                f"Macro mesh must consist of affine simplices: expected {self._tdim + 1} "
+                f"geometry nodes per cell, got {nodes_per_cell}. Higher order or non-simplex "
+                "cell geometries are not supported."
+            )
 
         # Setup function space (subclass-specific)
         self._V_macro = self._setup_macro_function_space()
-        self._macro_coordinates = self._V_macro.tabulate_dof_coordinates()
         self._bs = self._V_macro.dofmap.index_map_bs
 
         # Setup RHS and forms
@@ -352,9 +358,7 @@ class BaseHMM(ABC):
         """
         local_dofs = self._V_macro.dofmap.cell_dofs(cell_index)
         local_dofs_unrolled = _unroll_dofs(local_dofs, self._bs)
-        # Ensure connectivity between cells and vertices is available
-        self._msh.topology.create_connectivity(self._tdim, 0)
-        cell_vertices = self._macro_coordinates[local_dofs]
+        cell_vertices = self._cell_vertex_coordinates(cell_index)
 
         quadrature_points, quadrature_weights = self._get_cell_quadrature_rule(cell_vertices)
         S_loc = np.zeros((self._num_basis_functions_per_cell, self._num_basis_functions_per_cell))
@@ -395,8 +399,20 @@ class BaseHMM(ABC):
         # Scale contribution, scale by |Y| (in practice should be 1, better safe than sorry)
         return S_loc / self._cell_mesh_area
 
+    def _cell_vertex_coordinates(self, cell_index: int) -> np.ndarray:
+        """Coordinates of the vertices of one macro cell, shape `(tdim + 1, 3)`.
+
+        Args:
+            cell_index: process-local index of the macro cell.
+        """
+        return self._msh.geometry.x[self._msh.geometry.dofmap[cell_index]]
+
     def _get_cell_quadrature_rule(self, cell_vertices: np.ndarray):
         """Get quadrature points and weights for a cell.
+
+        Args:
+            cell_vertices: cell vertex coordinates as returned by
+                [`_cell_vertex_coordinates`][hommx.hmm.BaseHMM._cell_vertex_coordinates].
 
         Returns:
             tuple: (quadrature_points, quadrature_weights)
