@@ -818,6 +818,7 @@ class PoissonStratifiedHMM(PoissonHMM):
             petsc_options_cell_problem: PETSc solver options for the cell problem solver.
             petsc_options_prefix: Options prefix used for PETSc options.
         """
+        self._Dtheta_transpose = Dtheta_transpose
         super().__init__(
             msh,
             A,
@@ -830,8 +831,10 @@ class PoissonStratifiedHMM(PoissonHMM):
             petsc_options_cell_problem,
             petsc_options_prefix,
         )
-        self._Dtheta_t = Dtheta_transpose
-        self._Dtheta_tx = self._Dtheta_t(self._x_macro)
+
+    def _setup_cell_problem_variables(self) -> None:
+        super()._setup_cell_problem_variables()
+        self._Dtheta_tx = self._Dtheta_transpose(self._x_macro)
 
     def _build_cell_problem_lhs(self) -> fem.Form:
         return fem.form(
@@ -1080,11 +1083,12 @@ class LinearElasticityStratifiedHMM(LinearElasticityHMM):
             msh_micro: The microscopic mesh, needs to be the unit cell.
                 Should live on MPI.COMM_SELF since each process owns a whole copy.
             eps: The microscopic scaling parameter.
-            Dtheta_t: transpose of the jacobian, i.e. $(\frac{\partial \theta_j}{\partial x_i})_{i, j=1, ..., d}$
+            Dtheta_transpose: transpose of the jacobian, i.e. $(\frac{\partial \theta_j}{\partial x_i})_{i, j=1, ..., d}$
             petsc_options_global_solve: PETSc solver options for the global solver.
             petsc_options_cell_problem: PETSc solver options for the cell problem solver.
             petsc_options_prefix: Options prefix used for PETSc options.
         """
+        self._Dtheta_transpose = Dtheta_transpose
         super().__init__(
             msh,
             A,
@@ -1097,8 +1101,10 @@ class LinearElasticityStratifiedHMM(LinearElasticityHMM):
             petsc_options_cell_problem,
             petsc_options_prefix,
         )
-        self._Dtheta = Dtheta_transpose
-        self._Dtheta_tx = self._Dtheta(self._x_macro)
+
+    def _setup_cell_problem_variables(self) -> None:
+        super()._setup_cell_problem_variables()
+        self._Dtheta_tx = self._Dtheta_transpose(self._x_macro)
 
     def _e_D(self, u):
         r"""Strain of u pulled back through the coordinate transformation $\theta$."""
