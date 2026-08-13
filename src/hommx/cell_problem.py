@@ -375,15 +375,22 @@ class PeriodicLinearProblem(dolfinx_mpc.LinearProblem):
         self._solver.setOperators(self._A)
         nullspace.remove(self._b)
         self._nullspace = nullspace
+        self._operator_assembled = False
 
-    def solve(self) -> fem.Function:
-        """Solve the problem."""
-
-        # Assemble lhs
+    def _assemble_operator(self) -> None:
+        """Assembles the constrained operator, at most once per instance."""
+        if self._operator_assembled:
+            return
         self._A.zeroEntries()
         assemble_matrix(self._a, self._mpc, bcs=self.bcs, A=self._A)
         self._A.assemble()
         assert self._A.assembled
+        self._operator_assembled = True
+
+    def solve(self) -> fem.Function:
+        """Solve the problem."""
+
+        self._assemble_operator()
 
         # Assemble rhs
         with self._b.localForm() as b_loc:
@@ -402,3 +409,16 @@ class PeriodicLinearProblem(dolfinx_mpc.LinearProblem):
         self._mpc.backsubstitution(self.u)
 
         return self.u
+
+    def solve_with_rhs(self, L: fem.Form) -> fem.Function:
+        """Solves for a different right-hand side, reusing the assembled operator.
+
+        Args:
+            L: Compiled linear form to use as the right-hand side.
+
+        Returns:
+            The solution function. Note that the same function is reused across calls, so copy
+            its values before invoking this again if you need to keep them.
+        """
+        self._L = L
+        return self.solve()
