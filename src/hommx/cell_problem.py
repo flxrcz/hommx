@@ -13,6 +13,17 @@ from dolfinx_mpc.assemble_vector import apply_lifting, assemble_vector
 from petsc4py import PETSc
 
 
+def _clear_petsc_options(prefix: str) -> None:
+    """Removes every option starting with `prefix` from the global PETSc options database.
+
+    Args:
+        prefix: Options prefix to purge, without a leading dash.
+    """
+    opts = PETSc.Options()
+    for key in [k for k in opts.getAll() if k.startswith(prefix)]:
+        del opts[key]
+
+
 def create_periodic_boundary_conditions(
     function_space: fem.FunctionSpace,
     bcs: list[fem.DirichletBC] | None = None,
@@ -343,7 +354,12 @@ class PeriodicLinearProblem(dolfinx_mpc.LinearProblem):
     """
 
     def __init__(self, *args, **kwargs):
+        # dolfinx_mpc keys its PETSc solver options by id(self) and never removes them from
+        # the global options database. Clear to make sure they are gone.
+        solver_prefix = f"dolfinx_mpc_solve_{id(self)}"
+        _clear_petsc_options(solver_prefix)
         super().__init__(*args, **kwargs)
+        _clear_petsc_options(solver_prefix)
         assert hasattr(self, "_A")
         comm = self._a.mesh.comm
         nullspace_vector = PETSc.Vec().create(comm)
