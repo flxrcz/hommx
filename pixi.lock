@@ -2188,8 +2188,8 @@ packages:
   timestamp: 1753357986076
 - pypi: ./
   name: hommx
-  version: 0.0.3
-  sha256: f65a66765a0328a38a0518837a7b24020db64ba8388ecc5d61ca63cf280117cf
+  version: 0.0.4
+  sha256: ff0795d53d833662e4d1d5a23db33d675f10a15957be025e7c1084fc577a1d9e
   requires_dist:
   - pyvista[jupyter]==0.46.3 ; extra == 'plot'
   - trame-server==3.6.3 ; extra == 'plot'
