@@ -60,7 +60,7 @@ def create_periodic_boundary_conditions(
     """
     msh = function_space.mesh
     if msh.topology.dim == 1:
-        raise ValueError("Periodic boundary conditions in 1d not implemented.")
+        return _create_periodic_boundary_conditions_1d(msh, function_space, bcs)
     if msh.topology.dim == 2:
         return _create_periodic_boundary_conditions_2d(msh, function_space, bcs)
     if msh.topology.dim == 3:
@@ -68,6 +68,55 @@ def create_periodic_boundary_conditions(
     raise ValueError(
         f"Unkown topology dimension. {function_space.mesh.topology.dim=} is something unexpected"
     )
+
+
+def _create_periodic_boundary_conditions_1d(
+    msh: mesh.Mesh,
+    function_space: fem.FunctionSpace,
+    bcs: list[fem.DirichletBC] | None = None,
+) -> dolfinx_mpc.MultiPointConstraint:
+    """Creates periodic boundary condition on the unit interval using dolfinx_mpc.
+
+    We force $u(x_1) = u(x_0)$, so on the unit interval $(x_0, x_1) = (0, 1)$. The slave DoF
+    is the one at $x_1$. Unlike 2D and 3D there are no corners or edges, so no DoF is
+    constrained more than once. -> No extra care.
+
+    Args:
+        msh: Mesh that the boundary conditions should be applied to
+        function_space: Function Space on which the bc should be applied
+        bcs: Dirichlet Boundary Conditions, here the constraint is ignored
+    """
+    if bcs is None:
+        bcs = []
+    # the "facets" of an interval are its two boundary vertices
+    fdim = msh.topology.dim - 1
+    TAG_X = 2
+
+    slave_coord_x = np.max(msh.geometry.x, axis=0)[0]
+    master_coord_x = np.min(msh.geometry.x, axis=0)[0]
+
+    def is_slave_x(x):
+        return np.isclose(x[0], slave_coord_x)
+
+    def slave_to_master_map_x(x):
+        out_x = x.copy()
+        out_x[0] = x[0] - (slave_coord_x - master_coord_x)
+        return out_x
+
+    vertices_x = mesh.locate_entities_boundary(msh, fdim, is_slave_x)
+    meshtag = mesh.meshtags(
+        msh,
+        fdim,
+        vertices_x[np.argsort(vertices_x)],
+        np.full(len(vertices_x), TAG_X, dtype=np.int32),
+    )
+
+    mpc = dolfinx_mpc.MultiPointConstraint(function_space)
+    mpc.create_periodic_constraint_topological(
+        function_space, meshtag, TAG_X, slave_to_master_map_x, bcs
+    )
+    mpc.finalize()
+    return mpc
 
 
 def _create_periodic_boundary_conditions_2d(
