@@ -154,6 +154,9 @@ class BaseHMM(ABC):
         if petsc_options_cell_problem is None:
             petsc_options_cell_problem = {"ksp_atol": 1e-10}  # better default
         self._petsc_options_cell_problem = petsc_options_cell_problem
+        cell_problem.warn_if_cell_problem_options_unsuitable(
+            petsc_options_cell_problem, self._logger
+        )
 
         self._solver = PETSc.KSP().create(self._comm)
         self._solver.setOptionsPrefix(petsc_options_prefix)
@@ -1196,6 +1199,9 @@ class BasePeriodicHMM(ABC):
         if petsc_options_cell_problem is None:
             petsc_options_cell_problem = {"ksp_atol": 1e-12}
         self._petsc_options_cell_problem = petsc_options_cell_problem
+        cell_problem.warn_if_cell_problem_options_unsuitable(
+            petsc_options_cell_problem, self._logger
+        )
         self._petsc_options_global_solve = petsc_options_global_solve
 
         self._V_macro = self._setup_macro_function_space()
