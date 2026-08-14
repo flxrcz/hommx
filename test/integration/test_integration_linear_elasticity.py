@@ -60,7 +60,16 @@ def reference_mesh_2d(beam_width, beam_length):
 
 
 def test_linear_elasticity_2d(
-    micro_mesh_2d, macro_mesh_2d, reference_mesh_2d, eps_2d, atol_2d, beam_length, beam_width
+    micro_mesh_2d,
+    macro_mesh_2d,
+    reference_mesh_2d,
+    eps_2d,
+    atol_2d,
+    beam_length,
+    beam_width,
+    interpolate_nonmatching,
+    calc_l2_error,
+    calc_l2_norm,
 ):
     """Test FE-HMM on linear elasticity heuristically by solving on a rather fine mesh using FEM
     and comparing against the FE-HMM."""
@@ -91,8 +100,6 @@ def test_linear_elasticity_2d(
             indices=(i, j, k, l),
         )
         return A
-
-    COMM = MPI.COMM_WORLD
 
     f_reference = fem.Constant(reference_mesh_2d, default_scalar_type((0, -rho * g)))
 
@@ -140,29 +147,6 @@ def test_linear_elasticity_2d(
 
     u_lehmm = lehmm.solve()
 
-    def interpolate_nonmatching(
-        V_to: fem.FunctionSpace, V_from: fem.FunctionSpace, func: fem.Function
-    ) -> fem.Function:
-        tdim = V_to.mesh.topology.dim
-        cells_V_to = np.arange(V_to.mesh.topology.index_map(tdim).size_local, dtype=np.int32)
-        interpolation_data = fem.create_interpolation_data(V_to, V_from, cells_V_to)
-        func_V_to = fem.Function(V_to)
-        func_V_to.interpolate_nonmatching(func, cells_V_to, interpolation_data)
-        func_V_to.x.scatter_forward()
-        return func_V_to
-
-    def calc_l2_error(u1, u2):
-        return np.sqrt(
-            COMM.allreduce(
-                fem.assemble_scalar(fem.form(ufl.inner(u1 - u2, u1 - u2) * ufl.dx)), op=MPI.SUM
-            )
-        )
-
-    def calc_l2_norm(u1):
-        return np.sqrt(
-            COMM.allreduce(fem.assemble_scalar(fem.form(ufl.inner(u1, u1) * ufl.dx)), op=MPI.SUM)
-        )
-
     u_ref_interpolated = interpolate_nonmatching(u_lehmm._V, V_ref, u_ref)
     relative_error = calc_l2_error(u_lehmm, u_ref_interpolated) / calc_l2_norm(u_ref_interpolated)
 
@@ -203,7 +187,15 @@ def micro_mesh_3d():
 
 
 def test_linear_elasticity_3d(
-    micro_mesh_3d, macro_mesh_3d, eps_3d, atol_3d, beam_length, beam_width
+    micro_mesh_3d,
+    macro_mesh_3d,
+    eps_3d,
+    atol_3d,
+    beam_length,
+    beam_width,
+    interpolate_nonmatching,
+    calc_l2_error,
+    calc_l2_norm,
 ):
     """Since a fine FEM mesh is hard to do, we instead just compare them with no periodic
     component at all, this is rather a test if 3D linear elasticity runs through."""
@@ -234,8 +226,6 @@ def test_linear_elasticity_3d(
             indices=(i, j, k, l),
         )
         return A
-
-    COMM = MPI.COMM_SELF
 
     f_reference = fem.Constant(macro_mesh_3d, default_scalar_type((0, 0, -rho * g)))
 
@@ -282,29 +272,6 @@ def test_linear_elasticity_3d(
     lehmm.set_boundary_conditions(bc)
 
     u_lehmm = lehmm.solve()
-
-    def interpolate_nonmatching(
-        V_to: fem.FunctionSpace, V_from: fem.FunctionSpace, func: fem.Function
-    ) -> fem.Function:
-        tdim = V_to.mesh.topology.dim
-        cells_V_to = np.arange(V_to.mesh.topology.index_map(tdim).size_local, dtype=np.int32)
-        interpolation_data = fem.create_interpolation_data(V_to, V_from, cells_V_to)
-        func_V_to = fem.Function(V_to)
-        func_V_to.interpolate_nonmatching(func, cells_V_to, interpolation_data)
-        func_V_to.x.scatter_forward()
-        return func_V_to
-
-    def calc_l2_error(u1, u2):
-        return np.sqrt(
-            COMM.allreduce(
-                fem.assemble_scalar(fem.form(ufl.inner(u1 - u2, u1 - u2) * ufl.dx)), op=MPI.SUM
-            )
-        )
-
-    def calc_l2_norm(u1):
-        return np.sqrt(
-            COMM.allreduce(fem.assemble_scalar(fem.form(ufl.inner(u1, u1) * ufl.dx)), op=MPI.SUM)
-        )
 
     u_ref_interpolated = interpolate_nonmatching(u_lehmm._V, V_ref, u_ref)
     relative_error = calc_l2_error(u_lehmm, u_ref_interpolated) / calc_l2_norm(u_ref_interpolated)
