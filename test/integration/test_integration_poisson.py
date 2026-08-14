@@ -655,3 +655,65 @@ def test_order_convergence():
     assert error_p2 < error_p1 and error_p3 < error_p2, (
         f"Increasing micro_order did not reduce the L^2 error: {error_p1=}, {error_p2=}, {error_p3=}"
     )
+
+
+def test_1d_effective_coefficient_is_harmonic_mean():
+    r"""In 1D the homogenized coefficient is the harmonic mean of $A$ over the unit cell.
+
+    For $A(y) = 2 + \sin(2\pi y)$ one has $\int_Y A^{-1} = 3^{-1/2}$, hence
+    $A_\text{hom} = \sqrt{3}$ exactly, so this checks against an analytic value rather than a
+    reference mesh.
+    """
+
+    def A_y(y):
+        return 2.0 + ufl.sin(2 * ufl.pi * y[0])
+
+    def f(x):
+        return 1.0
+
+    macro_mesh = mesh.create_unit_interval(MPI.COMM_SELF, 8)
+    micro_mesh = mesh.create_unit_interval(MPI.COMM_SELF, 160)
+    periodic = PoissonPeriodicHMM(
+        macro_mesh, A_y, f, micro_mesh, 0.01, petsc_options_cell_problem={"ksp_atol": 1e-14}
+    )
+    A_hom = periodic.compute_effective_tensor()
+    exact = np.sqrt(3.0)
+    relative_error = abs(A_hom[0, 0] - exact) / exact
+    assert relative_error < 1e-4, (
+        f"1D effective coefficient is not the harmonic mean: {A_hom[0, 0]=}, {exact=}"
+    )
+
+
+def test_1d_hmm_matches_analytic_solution():
+    r"""End-to-end 1D HMM against the analytically homogenized solution.
+
+    With $A_\text{hom} = \sqrt{3}$ (see
+    [`test_1d_effective_coefficient_is_harmonic_mean`][], the homogenized problem
+    $-(A_\text{hom} u')' = 1$ with $u(0) = u(1) = 0$ has the exact solution
+    $u(x) = x(1-x) / (2 A_\text{hom})$.
+    """
+
+    def A(x, y):
+        return 2.0 + ufl.sin(2 * ufl.pi * y[0])
+
+    def f(x):
+        return 1.0
+
+    n_macro = 32
+    macro_mesh = mesh.create_unit_interval(MPI.COMM_SELF, n_macro)
+    micro_mesh = mesh.create_unit_interval(MPI.COMM_SELF, 200)
+    phmm = PoissonHMM(
+        macro_mesh,
+        A,
+        f,
+        micro_mesh,
+        1.0 / (10 * n_macro),
+        petsc_options_cell_problem={"ksp_atol": 1e-14},
+    )
+    u = phmm.solve()
+
+    x = ufl.SpatialCoordinate(macro_mesh)
+    u_exact = x[0] * (1 - x[0]) / (2 * np.sqrt(3.0))
+    error = np.sqrt(fem.assemble_scalar(fem.form((u - u_exact) ** 2 * ufl.dx)))
+    norm = np.sqrt(fem.assemble_scalar(fem.form(u_exact**2 * ufl.dx)))
+    assert error / norm < 2e-3, f"1D HMM does not match the analytic solution: {error / norm=}"

@@ -98,8 +98,8 @@ class BaseHMM(ABC):
         self._cell_mesh_area = fem.assemble_scalar(fem.form(1 * ufl.dx(domain=self._cell_mesh)))
         self._tdim = self._msh.topology.dim
 
-        if self._tdim not in (2, 3):
-            raise ValueError("Topology should be 3D or 2D")
+        if self._tdim not in (1, 2, 3):
+            raise ValueError("Topology should be 1D, 2D or 3D")
         if self._tdim != self._msh.geometry.dim:
             raise ValueError(
                 "Topological dimension is different from geometrical dimension. Currently surfaces in 3D are not supported."
@@ -699,6 +699,16 @@ class PoissonHMM(BaseHMM):
                 ),
             )
 
+        if self._tdim == 1:
+            # Dirichlet BC
+            left = np.min(self._msh.geometry.x[:, 0])
+            right = np.max(self._msh.geometry.x[:, 0])
+            facets = mesh.locate_entities_boundary(
+                self._msh,
+                dim=(self._msh.topology.dim - 1),
+                marker=lambda x: np.isclose(x[0], left) | np.isclose(x[0], right),
+            )
+
         if self._tdim == 2:
             # Dirichlet BC
             left = np.min(self._msh.geometry.x[:, 0])
@@ -1190,8 +1200,8 @@ class BasePeriodicHMM(ABC):
         self._tdim = msh_micro.topology.dim
         self._macro_order = macro_order
         self._micro_order = micro_order
-        if self._tdim not in (2, 3):
-            raise ValueError("Only 2D and 3D periodic homogenization supported.")
+        if self._tdim not in (1, 2, 3):
+            raise ValueError("Only 1D, 2D and 3D periodic homogenization supported.")
         self._cell_volume = fem.assemble_scalar(fem.form(1 * ufl.dx(domain=self._cell_mesh)))
         if self._cell_volume == 0.0:
             raise ValueError("Micro cell volume is zero; check the input mesh.")
