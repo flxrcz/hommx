@@ -50,10 +50,12 @@ def zero_dirichlet_bcs(V: fem.FunctionSpace) -> list[fem.DirichletBC]:
     facets = mesh.locate_entities_boundary(
         msh,
         dim=(tdim - 1),
-        marker=lambda x: np.isclose(x[0], left)
-        | np.isclose(x[0], right)
-        | np.isclose(x[1], bottom)
-        | np.isclose(x[1], top),
+        marker=lambda x: (
+            np.isclose(x[0], left)
+            | np.isclose(x[0], right)
+            | np.isclose(x[1], bottom)
+            | np.isclose(x[1], top)
+        ),
     )
     dofs = fem.locate_dofs_topological(V, entity_dim=(tdim - 1), entities=facets)
     return [fem.dirichletbc(PETSc.ScalarType(0), dofs, V)]

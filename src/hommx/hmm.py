@@ -19,6 +19,7 @@ import hommx.cell_problem as cell_problem
 try:
     from tqdm import tqdm
 except ImportError:
+
     def tqdm(iterable, *args, **kwargs):
         """No-op stand-in for `tqdm.tqdm` used when tqdm is not installed."""
         return iterable
@@ -419,22 +420,25 @@ class BaseHMM(ABC):
                 where quadrature_points has shape (num_qp, gdim)
         """
         if self._tdim == 1:
-            J = np.column_stack([
-                cell_vertices[1] - cell_vertices[0],
-            ])
+            J = np.column_stack(
+                [
+                    cell_vertices[1] - cell_vertices[0],
+                ]
+            )
 
         if self._tdim == 2:
-            J = np.column_stack([
-                cell_vertices[1] - cell_vertices[0],
-                cell_vertices[2] - cell_vertices[0]
-            ])
+            J = np.column_stack(
+                [cell_vertices[1] - cell_vertices[0], cell_vertices[2] - cell_vertices[0]]
+            )
         if self._tdim == 3:
-            J = np.column_stack([
-                cell_vertices[1] - cell_vertices[0],
-                cell_vertices[2] - cell_vertices[0],
-                cell_vertices[3] - cell_vertices[0]
-            ])
-        det_J = np.abs(np.linalg.det(J[:self._tdim, :self._tdim]))
+            J = np.column_stack(
+                [
+                    cell_vertices[1] - cell_vertices[0],
+                    cell_vertices[2] - cell_vertices[0],
+                    cell_vertices[3] - cell_vertices[0],
+                ]
+            )
+        det_J = np.abs(np.linalg.det(J[: self._tdim, : self._tdim]))
 
         phys_points = cell_vertices[0] + self._ref_quadrature_points @ J.T
         return (phys_points, self._ref_quadrature_weights * det_J)

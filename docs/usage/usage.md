@@ -23,15 +23,18 @@ from dolfinx import mesh
 from mpi4py import MPI
 from hommx.hmm import PoissonHMM
 
+
 def A(x, y):
-    return 1 + 0.5*ufl.sin(2*ufl.pi*y[0])
+    return 1 + 0.5 * ufl.sin(2 * ufl.pi * y[0])
+
 
 def f(x):
     return 1
 
+
 mesh_macro = mesh.create_unit_square(MPI.COMM_WORLD, nx=20, ny=20)
 mesh_micro = mesh.create_unit_square(MPI.COMM_SELF, nx=20, ny=20)
-eps = 2**(-8)
+eps = 2 ** (-8)
 hmm_solver = PoissonHMM(mesh_macro, A, f, mesh_micro, eps)
 solution = hmm_solver.solve()
 ```
@@ -45,7 +48,8 @@ We can set boundary conditions with the [`set_boundary_conditions`][hommx.hmm.Ba
 
 ```py
 from dolfinx import default_scalar_type
-dofs= ...
+
+dofs = ...
 bc = fem.dirichletbc(value=default_scalar_type(1), dofs=dofs_left, V=hmm_solver.function_space)
 hmm_solver.set_boundary_conditions([bc])
 solution = hmm_solver.solve()
@@ -56,6 +60,7 @@ Or set another right-hand side with the [`set_right_hand_side`][hommx.hmm.BaseHM
 ```py
 def f(x):
     return 2
+
 
 hmm_solver.set_right_hand_side(f)
 solution = hmm_solver.solve()

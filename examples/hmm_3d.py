@@ -65,12 +65,14 @@ front = np.max(msh_ref.geometry.x[:, 2])
 facets = mesh.locate_entities_boundary(
     msh_ref,
     dim=(msh_ref.topology.dim - 1),
-    marker=lambda x: np.isclose(x[0], left)
-    | np.isclose(x[0], right)
-    | np.isclose(x[1], bottom)
-    | np.isclose(x[1], top)
-    | np.isclose(x[2], back)
-    | np.isclose(x[2], front),
+    marker=lambda x: (
+        np.isclose(x[0], left)
+        | np.isclose(x[0], right)
+        | np.isclose(x[1], bottom)
+        | np.isclose(x[1], top)
+        | np.isclose(x[2], back)
+        | np.isclose(x[2], front)
+    ),
 )
 dofs = fem.locate_dofs_topological(V_ref, entity_dim=(msh_ref.topology.dim - 1), entities=facets)
 bc = fem.dirichletbc(value=PETSc.ScalarType(0), dofs=dofs, V=V_ref)
