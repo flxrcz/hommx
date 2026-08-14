@@ -6,7 +6,6 @@ from collections.abc import Callable
 
 import basix
 import numpy as np
-import pyvista as pv
 import ufl
 from dolfinx import fem, la, mesh, plot
 from dolfinx.fem.assemble import _assemble_vector_array
@@ -572,6 +571,8 @@ class BaseHMM(ABC):
         On parallel methods each process only plots the local part.
 
         """
+        import pyvista as pv
+
         if u is None:
             u = self._u
         cells, types, x = plot.vtk_mesh(self._V_macro)
