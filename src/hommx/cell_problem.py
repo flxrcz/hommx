@@ -5,12 +5,36 @@ Classes:
         adds periodic boundary conditions on boxes.
 """
 
+import logging
+
 import dolfinx_mpc
 import numpy as np
 from dolfinx import fem, mesh
 from dolfinx_mpc.assemble_matrix import assemble_matrix
 from dolfinx_mpc.assemble_vector import apply_lifting, assemble_vector
 from petsc4py import PETSc
+
+
+def warn_if_cell_problem_options_unsuitable(
+    petsc_options: dict | None, logger: logging.Logger | None = None
+) -> None:
+    """Warns if the cell problem solver options cannot handle the singular operator.
+
+    Args:
+        petsc_options: Cell problem PETSc options to inspect.
+        logger: Logger to warn on. Defaults to this module's logger.
+    """
+    if not petsc_options:
+        return
+    logger = logger or logging.getLogger(__name__)
+    pc_type = petsc_options.get("pc_type")
+
+    if pc_type in ("lu", "cholesky") and "pc_factor_mat_solver_type" not in petsc_options:
+        logger.warning(
+            f"Direct '{pc_type}' solve with PETSc's built-in factorization cannot factor the "
+            "singular cell problem operator and will produce NaN. Pass "
+            "pc_factor_mat_solver_type='mumps' or use an iterative solver."
+        )
 
 
 def _clear_petsc_options(prefix: str) -> None:
