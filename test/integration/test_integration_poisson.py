@@ -9,34 +9,6 @@ from petsc4py import PETSc
 from hommx.hmm import PoissonHMM, PoissonPeriodicHMM, PoissonStratifiedHMM
 from hommx.petsc_helper import petsc_matrix_to_numpy
 
-COMM = MPI.COMM_SELF
-
-
-def interpolate_nonmatching(
-    V_to: fem.FunctionSpace, V_from: fem.FunctionSpace, func: fem.Function
-) -> fem.Function:
-    tdim = V_to.mesh.topology.dim
-    cells_V_to = np.arange(V_to.mesh.topology.index_map(tdim).size_local, dtype=np.int32)
-    interpolation_data = fem.create_interpolation_data(V_to, V_from, cells_V_to)
-    func_V_to = fem.Function(V_to)
-    func_V_to.interpolate_nonmatching(func, cells_V_to, interpolation_data)
-    func_V_to.x.scatter_forward()
-    return func_V_to
-
-
-def calc_l2_error(u1, u2):
-    return np.sqrt(
-        COMM.allreduce(
-            fem.assemble_scalar(fem.form(ufl.inner(u1 - u2, u1 - u2) * ufl.dx)), op=MPI.SUM
-        )
-    )
-
-
-def calc_l2_norm(u1):
-    return np.sqrt(
-        COMM.allreduce(fem.assemble_scalar(fem.form(ufl.inner(u1, u1) * ufl.dx)), op=MPI.SUM)
-    )
-
 
 def zero_dirichlet_bcs(V: fem.FunctionSpace) -> list[fem.DirichletBC]:
     msh = V.mesh
@@ -187,7 +159,9 @@ def test_analytical_example_2(micro_mesh, macro_mesh, eps, atol):
     assert np.isclose(L2_error, 0, atol=atol), f"L^2 error too big {L2_error=}"
 
 
-def test_periodic_poisson_hmm_matches_periodic_homogenization(micro_mesh, macro_mesh, eps):
+def test_periodic_poisson_hmm_matches_periodic_homogenization(
+    micro_mesh, macro_mesh, eps, calc_l2_error
+):
     """For A = A(y) (no slow variable dependence), PoissonHMM should match PoissonPeriodicHMM."""
 
     def A_y(y):
@@ -246,7 +220,16 @@ def test_periodic_poisson_hmm_matches_periodic_homogenization(micro_mesh, macro_
     assert matrix_rel < 1e-8, f"Stiffness matrices differ: {matrix_rel=}"
 
 
-def test_3d(micro_mesh_3d, macro_mesh_3d, reference_mesh_3d, eps_3d, atol_3d):
+def test_3d(
+    micro_mesh_3d,
+    macro_mesh_3d,
+    reference_mesh_3d,
+    eps_3d,
+    atol_3d,
+    interpolate_nonmatching,
+    calc_l2_error,
+    calc_l2_norm,
+):
     def A(x, y):
         return 1.1 + x[0] + ufl.sin(2 * ufl.pi * y[0])
 
@@ -327,7 +310,16 @@ def reference_mesh_bc(mesh_reference_sizes_bc):
     return mesh.create_unit_square(MPI.COMM_SELF, *mesh_reference_sizes_bc)
 
 
-def test_custom_boundary_condition(micro_mesh, macro_mesh, eps_bc, atol_bc, reference_mesh_bc):
+def test_custom_boundary_condition(
+    micro_mesh,
+    macro_mesh,
+    eps_bc,
+    atol_bc,
+    reference_mesh_bc,
+    interpolate_nonmatching,
+    calc_l2_error,
+    calc_l2_norm,
+):
     """Simple integration test, to test if custom boundary conditions work."""
 
     def A(x, y):
@@ -408,7 +400,14 @@ def test_custom_boundary_condition(micro_mesh, macro_mesh, eps_bc, atol_bc, refe
 
 
 def test_custom_boundary_condition_no_homogenization(
-    micro_mesh, macro_mesh, eps_bc, atol_bc_no_homogenization, reference_mesh_bc
+    micro_mesh,
+    macro_mesh,
+    eps_bc,
+    atol_bc_no_homogenization,
+    reference_mesh_bc,
+    interpolate_nonmatching,
+    calc_l2_error,
+    calc_l2_norm,
 ):
     """Simple integration test, to test if custom boundary conditions work."""
 
@@ -494,7 +493,16 @@ def atol_stratified():
     return 1e-2
 
 
-def test_stratified(micro_mesh, macro_mesh, eps_bc, atol_stratified, reference_mesh_bc):
+def test_stratified(
+    micro_mesh,
+    macro_mesh,
+    eps_bc,
+    atol_stratified,
+    reference_mesh_bc,
+    interpolate_nonmatching,
+    calc_l2_error,
+    calc_l2_norm,
+):
     """Simple integration test, to test if custom boundary conditions work."""
 
     def A(x, y):
