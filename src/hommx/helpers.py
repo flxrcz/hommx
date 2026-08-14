@@ -91,10 +91,12 @@ def solve_diffusion_2d(
     facets = mesh.locate_entities_boundary(
         msh,
         dim=(msh.topology.dim - 1),
-        marker=lambda x: np.isclose(x[0], 0.0)
-        | np.isclose(x[0], 1.0)
-        | np.isclose(x[1], 0.0)
-        | np.isclose(x[1], 1.0),
+        marker=lambda x: (
+            np.isclose(x[0], 0.0)
+            | np.isclose(x[0], 1.0)
+            | np.isclose(x[1], 0.0)
+            | np.isclose(x[1], 1.0)
+        ),
     )
     dofs = fem.locate_dofs_topological(V=V, entity_dim=msh.topology.dim - 1, entities=facets)
     bc = fem.dirichletbc(value=ScalarType(0), dofs=dofs, V=V)
@@ -260,10 +262,12 @@ class PoissonFEM:
         facets = mesh.locate_entities_boundary(
             msh,
             dim=(msh.topology.dim - 1),
-            marker=lambda x: np.isclose(x[0], left)
-            | np.isclose(x[0], right)
-            | np.isclose(x[1], bottom)
-            | np.isclose(x[1], top),
+            marker=lambda x: (
+                np.isclose(x[0], left)
+                | np.isclose(x[0], right)
+                | np.isclose(x[1], bottom)
+                | np.isclose(x[1], top)
+            ),
         )
         dofs = fem.locate_dofs_topological(
             self._V, entity_dim=(msh.topology.dim - 1), entities=facets

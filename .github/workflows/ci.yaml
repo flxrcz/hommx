@@ -8,24 +8,27 @@ on:
     branches:
         - main
   pull_request:
-    types: [opened, reopened, closed]
     branches:
       - main
 
 # -- Jobs ------------------------------------------------------------------------------------------
 jobs:
-  # Format code with Ruff (checks for failure)
   format:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         id: checkout-code
         uses: actions/checkout@v5
-      - name: Format with ruff
+      - name: Lint with ruff
+        id: lint-with-ruff
+        uses: astral-sh/ruff-action@v3
+        with:
+          args: "check"
+      - name: Check formatting with ruff
         id: format-with-ruff
         uses: astral-sh/ruff-action@v3
         with:
-          args: "format"
+          args: "format --check"
 
   # Build documentation without deploying
   docs:

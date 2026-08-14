@@ -48,10 +48,12 @@ def zero_dirichlet_bcs(V: fem.FunctionSpace) -> list[fem.DirichletBC]:
     facets = mesh.locate_entities_boundary(
         msh,
         dim=(tdim - 1),
-        marker=lambda x: np.isclose(x[0], left)
-        | np.isclose(x[0], right)
-        | np.isclose(x[1], bottom)
-        | np.isclose(x[1], top),
+        marker=lambda x: (
+            np.isclose(x[0], left)
+            | np.isclose(x[0], right)
+            | np.isclose(x[1], bottom)
+            | np.isclose(x[1], top)
+        ),
     )
     dofs = fem.locate_dofs_topological(V, entity_dim=(tdim - 1), entities=facets)
     return [fem.dirichletbc(PETSc.ScalarType(0), dofs, V)]
@@ -233,12 +235,14 @@ def test_periodic_poisson_hmm_matches_periodic_homogenization(micro_mesh, macro_
     u_periodic = periodic.solve()
 
     error = calc_l2_error(u_hmm, u_periodic)
-    # assert error < 1e-12, f"PoissonHMM and PoissonPeriodicHMM differ: {error=}"
+    assert error < 1e-12, f"PoissonHMM and PoissonPeriodicHMM differ: {error=}"
 
     A_periodic = petsc_matrix_to_numpy(periodic._lp.A)
     A_hmm = petsc_matrix_to_numpy(hmm._A)
-    assert A_periodic.shape == A_hmm.shape, f"Stiffness matrices are not the same shape, {A_periodic.shape=}, {A_hmm.shape=}"
-    matrix_rel = np.linalg.norm(A_periodic - A_hmm)/np.linalg.norm(A_periodic)
+    assert A_periodic.shape == A_hmm.shape, (
+        f"Stiffness matrices are not the same shape, {A_periodic.shape=}, {A_hmm.shape=}"
+    )
+    matrix_rel = np.linalg.norm(A_periodic - A_hmm) / np.linalg.norm(A_periodic)
     assert matrix_rel < 1e-8, f"Stiffness matrices differ: {matrix_rel=}"
 
 
@@ -271,12 +275,14 @@ def test_3d(micro_mesh_3d, macro_mesh_3d, reference_mesh_3d, eps_3d, atol_3d):
     facets = mesh.locate_entities_boundary(
         reference_mesh_3d,
         dim=(reference_mesh_3d.topology.dim - 1),
-        marker=lambda x: np.isclose(x[0], left)
-        | np.isclose(x[0], right)
-        | np.isclose(x[1], bottom)
-        | np.isclose(x[1], top)
-        | np.isclose(x[2], back)
-        | np.isclose(x[2], front),
+        marker=lambda x: (
+            np.isclose(x[0], left)
+            | np.isclose(x[0], right)
+            | np.isclose(x[1], bottom)
+            | np.isclose(x[1], top)
+            | np.isclose(x[2], back)
+            | np.isclose(x[2], front)
+        ),
     )
     dofs = fem.locate_dofs_topological(
         V_ref, entity_dim=(reference_mesh_3d.topology.dim - 1), entities=facets
@@ -353,10 +359,12 @@ def test_custom_boundary_condition(micro_mesh, macro_mesh, eps_bc, atol_bc, refe
     facets = mesh.locate_entities_boundary(
         reference_mesh_bc,
         dim=(reference_mesh_bc.topology.dim - 1),
-        marker=lambda x: np.isclose(x[0], left)
-        | np.isclose(x[0], right)
-        | np.isclose(x[1], bottom)
-        | np.isclose(x[1], top),
+        marker=lambda x: (
+            np.isclose(x[0], left)
+            | np.isclose(x[0], right)
+            | np.isclose(x[1], bottom)
+            | np.isclose(x[1], top)
+        ),
     )
     dofs = fem.locate_dofs_topological(
         V_ref, entity_dim=(reference_mesh_bc.topology.dim - 1), entities=facets
@@ -375,10 +383,12 @@ def test_custom_boundary_condition(micro_mesh, macro_mesh, eps_bc, atol_bc, refe
     facets = mesh.locate_entities_boundary(
         macro_mesh,
         dim=(macro_mesh.topology.dim - 1),
-        marker=lambda x: np.isclose(x[0], left)
-        | np.isclose(x[0], right)
-        | np.isclose(x[1], bottom)
-        | np.isclose(x[1], top),
+        marker=lambda x: (
+            np.isclose(x[0], left)
+            | np.isclose(x[0], right)
+            | np.isclose(x[1], bottom)
+            | np.isclose(x[1], top)
+        ),
     )
     dofs = fem.locate_dofs_topological(
         phmm.function_space, entity_dim=(macro_mesh.topology.dim - 1), entities=facets
@@ -431,10 +441,12 @@ def test_custom_boundary_condition_no_homogenization(
     facets = mesh.locate_entities_boundary(
         reference_mesh_bc,
         dim=(reference_mesh_bc.topology.dim - 1),
-        marker=lambda x: np.isclose(x[0], left)
-        | np.isclose(x[0], right)
-        | np.isclose(x[1], bottom)
-        | np.isclose(x[1], top),
+        marker=lambda x: (
+            np.isclose(x[0], left)
+            | np.isclose(x[0], right)
+            | np.isclose(x[1], bottom)
+            | np.isclose(x[1], top)
+        ),
     )
     dofs = fem.locate_dofs_topological(
         V_ref, entity_dim=(reference_mesh_bc.topology.dim - 1), entities=facets
@@ -453,10 +465,12 @@ def test_custom_boundary_condition_no_homogenization(
     facets = mesh.locate_entities_boundary(
         macro_mesh,
         dim=(macro_mesh.topology.dim - 1),
-        marker=lambda x: np.isclose(x[0], left)
-        | np.isclose(x[0], right)
-        | np.isclose(x[1], bottom)
-        | np.isclose(x[1], top),
+        marker=lambda x: (
+            np.isclose(x[0], left)
+            | np.isclose(x[0], right)
+            | np.isclose(x[1], bottom)
+            | np.isclose(x[1], top)
+        ),
     )
     dofs = fem.locate_dofs_topological(
         phmm.function_space, entity_dim=(macro_mesh.topology.dim - 1), entities=facets
@@ -525,10 +539,12 @@ def test_stratified(micro_mesh, macro_mesh, eps_bc, atol_stratified, reference_m
     facets = mesh.locate_entities_boundary(
         reference_mesh_bc,
         dim=(reference_mesh_bc.topology.dim - 1),
-        marker=lambda x: np.isclose(x[0], left)
-        | np.isclose(x[0], right)
-        | np.isclose(x[1], bottom)
-        | np.isclose(x[1], top),
+        marker=lambda x: (
+            np.isclose(x[0], left)
+            | np.isclose(x[0], right)
+            | np.isclose(x[1], bottom)
+            | np.isclose(x[1], top)
+        ),
     )
     dofs = fem.locate_dofs_topological(
         V_ref, entity_dim=(reference_mesh_bc.topology.dim - 1), entities=facets
@@ -545,7 +561,7 @@ def test_stratified(micro_mesh, macro_mesh, eps_bc, atol_stratified, reference_m
         micro_mesh,
         eps_bc,
         Dtheta,
-        petsc_options_cell_problem={"ksp_type": "gmres", "pc_type": "none"},
+        petsc_options_cell_problem={"ksp_atol": 1e-9, "pc_type": "none"},
     )
     left = np.min(macro_mesh.geometry.x[:, 0])
     right = np.max(macro_mesh.geometry.x[:, 0])
@@ -554,10 +570,12 @@ def test_stratified(micro_mesh, macro_mesh, eps_bc, atol_stratified, reference_m
     facets = mesh.locate_entities_boundary(
         macro_mesh,
         dim=(macro_mesh.topology.dim - 1),
-        marker=lambda x: np.isclose(x[0], left)
-        | np.isclose(x[0], right)
-        | np.isclose(x[1], bottom)
-        | np.isclose(x[1], top),
+        marker=lambda x: (
+            np.isclose(x[0], left)
+            | np.isclose(x[0], right)
+            | np.isclose(x[1], bottom)
+            | np.isclose(x[1], top)
+        ),
     )
     dofs = fem.locate_dofs_topological(
         phmm.function_space, entity_dim=(macro_mesh.topology.dim - 1), entities=facets
@@ -574,28 +592,22 @@ def test_stratified(micro_mesh, macro_mesh, eps_bc, atol_stratified, reference_m
     )
 
 
-
-
-
 def test_order_convergence():
     """For a smooth coefficient with a known exact homogenized solution, increasing the
-    macro polynomial order on a fixed, coarse macro mesh should meaningfully reduce the
-    L^2 error. The micro mesh is kept fine and second order so its own discretization
-    error doesn't mask the effect of the macro order.
+    polynomial order should decrease the error.
     """
 
     def _smooth_periodic_A(x, y):
         """A smooth, purely y-periodic coefficient (matches test_analytical_example_1)."""
         return 1 / (2 + ufl.cos(2 * ufl.pi * y[0]))
 
-
     def _smooth_periodic_f(x):
-        return ufl.pi**2 * (1 / 2 + 1 / ufl.sqrt(3)) * ufl.sin(ufl.pi * x[0]) * ufl.sin(ufl.pi * x[1])
-
+        return (
+            ufl.pi**2 * (1 / 2 + 1 / ufl.sqrt(3)) * ufl.sin(ufl.pi * x[0]) * ufl.sin(ufl.pi * x[1])
+        )
 
     def _smooth_periodic_solution(x):
         return ufl.sin(ufl.pi * x[0]) * ufl.sin(ufl.pi * x[1])
-
 
     def _smooth_periodic_l2_error(macro_mesh, micro_mesh, eps, macro_order, micro_order):
         phmm = PoissonHMM(
@@ -620,7 +632,6 @@ def test_order_convergence():
     error_p2 = _smooth_periodic_l2_error(macro_mesh, micro_mesh, eps, macro_order=2, micro_order=1)
     error_p3 = _smooth_periodic_l2_error(macro_mesh, micro_mesh, eps, macro_order=3, micro_order=1)
 
-
     assert error_p2 < error_p1 and error_p3 < error_p2, (
         f"Increasing macro_order did not reduce the L^2 error: {error_p1=}, {error_p2=}, {error_p3=}"
     )
@@ -631,9 +642,8 @@ def test_order_convergence():
 
     error_p1 = _smooth_periodic_l2_error(macro_mesh, micro_mesh, eps, macro_order=1, micro_order=1)
     error_p2 = _smooth_periodic_l2_error(macro_mesh, micro_mesh, eps, macro_order=1, micro_order=2)
-    error_p2 = _smooth_periodic_l2_error(macro_mesh, micro_mesh, eps, macro_order=1, micro_order=3)
+    error_p3 = _smooth_periodic_l2_error(macro_mesh, micro_mesh, eps, macro_order=1, micro_order=3)
 
     assert error_p2 < error_p1 and error_p3 < error_p2, (
         f"Increasing micro_order did not reduce the L^2 error: {error_p1=}, {error_p2=}, {error_p3=}"
     )
-
